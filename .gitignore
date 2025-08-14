@@ -30,3 +30,19 @@ __pycache__/
 *.tsv
 *.json
 *.pkl
+
+# PyTorch / TorchScript modelleri
+*.pt
+*.pth
+
+# Hugging Face / Transformers modelleri
+*.bin
+*.safetensors
+
+# TensorFlow modelleri
+*.pb
+*.h5
+
+# Diğer büyük model dosyaları
+*.onnx
+*.tflite
