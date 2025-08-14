@@ -1,259 +1,379 @@
-# system_monitor.py
+#!/usr/bin/env python3
+"""
+Ana Monitoring ve Query Sistemi
+- Sistem ve web verilerini 2 dakikada bir toplar
+- Elasticsearch'e kaydeder  
+- DialoGPT ile sorgulama yapar
+"""
 
 import time
-import socket
-from datetime import datetime, timedelta
-import psutil
-import speedtest
-# ElasticsearchClient sınıfını ayrı dosyadan import ediyoruz
-from elasticsearch_client_v8 import ElasticsearchClient
+import threading
+from datetime import datetime
+from data_collector import DataCollector
+from query_system import QuerySystem
+from config import ELASTICSEARCH_CONFIG, MONITORING_CONFIG
 
-# Web bilgilerini toplayan sınıf
-class WebInfo:
+class MonitoringApp:
+    """
+    Ana monitoring uygulaması.
+    Veri toplama ve sorgu sistemini yönetir.
+    """
+    
     def __init__(self):
-        self.download_speed = None
-        self.upload_speed = None
-        self.ping = None
-        self.ip_info = None
-        self.vpn_status = None
-    
-    def get_speed_test_info(self):
+        print("🚀 Monitoring Uygulaması başlatılıyor...")
+        
+        # Veri toplayıcıyı başlat
         try:
-            st = speedtest.Speedtest()
-            st.get_best_server()
-            self.download_speed = st.download() / 1_000_000
-            self.upload_speed = st.upload() / 1_000_000
-            self.ping = st.results.ping
-            print(f"Hız testi tamamlandı: İndirme: {self.download_speed:.2f} Mbps, Yükleme: {self.upload_speed:.2f} Mbps, Ping: {self.ping:.2f} ms")
-            return {
-                "download_speed": self.download_speed,
-                "upload_speed": self.upload_speed,
-                "ping": self.ping
-            }
-        except Exception as e:
-            print(f"Hız testi hatası: {e}")
-            return None
-    
-    def get_ip_info(self):
-        # ipinfo.io gibi bir servisten IP bilgisi alınabilir.
-        # Bu kısım için `requests` kütüphanesi gerekli olabilir.
-        # 'pip install requests' ile kurmanız gerekir.
-        # Ancak basit bir örnek için bu kısım mocklanabilir veya dışarıda bırakılabilir.
-        return None
-    
-    def VPN_info(self):
-        # VPN tespiti için ek kodlar gereklidir.
-        # Örneğin, bilinen bir IP'den farklı bir IP'ye sahip olup olmadığını kontrol etmek.
-        return "Not Implemented" # Örnek olarak bu şekilde bırakıldı
-
-# Ana monitör sınıfı
-class SystemMonitor:
-    def __init__(self, es_host='localhost', es_port=9200, es_username=None, es_password=None):
-        self.es_client = ElasticsearchClient(
-            host=es_host,
-            port=es_port,
-            username=es_username,
-            password=es_password
-        )
-        
-        self.create_indices()
-        self.web_info = WebInfo()
-        self.hostname = socket.gethostname()
-    
-    def create_indices(self):
-        """
-        Gerekli index'leri oluşturur
-        """
-        web_mapping = {
-            "properties": {
-                "hostname": {"type": "keyword"},
-                "timestamp": {"type": "date"},
-                "download_speed": {"type": "float"},
-                "upload_speed": {"type": "float"},
-                "ping": {"type": "float"},
-                "ip_info": {
-                    "properties": {
-                        "ip": {"type": "ip"},
-                        "hostname": {"type": "text"},
-                        "city": {"type": "keyword"},
-                        "region": {"type": "keyword"},
-                        "country": {"type": "keyword"},
-                        "loc": {"type": "keyword"},
-                        "org": {"type": "text"},
-                        "postal": {"type": "keyword"},
-                        "timezone": {"type": "keyword"}
-                    }
-                },
-                "vpn_status": {"type": "text"}
-            }
-        }
-        
-        system_mapping = {
-            "properties": {
-                "hostname": {"type": "keyword"},
-                "timestamp": {"type": "date"},
-                "cpu_percent": {"type": "float"},
-                "memory_percent": {"type": "float"},
-                "disk_usage": {"type": "float"},
-                "process_count": {"type": "integer"}
-            }
-        }
-        
-        self.es_client.create_index("web-info", web_mapping)
-        self.es_client.create_index("system-info", system_mapping)
-    
-    def collect_web_info(self):
-        """
-        Web bilgilerini toplar ve Elasticsearch'e gönderir
-        """
-        print("Web bilgileri toplanıyor...")
-        
-        self.web_info.get_speed_test_info()
-        ip_info = self.web_info.get_ip_info()
-        vpn_status = self.web_info.VPN_info()
-        
-        web_data = {
-            "hostname": self.hostname,
-            "download_speed": self.web_info.download_speed,
-            "upload_speed": self.web_info.upload_speed,
-            "ping": self.web_info.ping,
-            "ip_info": ip_info,
-            "vpn_status": vpn_status
-        }
-        
-        self.es_client.index_document("web-info", web_data)
-        print("Web bilgileri Elasticsearch'e gönderildi.")
-        
-        return web_data
-    
-    def collect_system_info(self):
-        """
-        Sistem bilgilerini toplar (psutil kütüphanesi kullanır)
-        """
-        print("Sistem bilgileri toplanıyor...")
-        
-        system_data = {
-            "hostname": self.hostname,
-            "cpu_percent": psutil.cpu_percent(interval=1),
-            "memory_percent": psutil.virtual_memory().percent,
-            "disk_usage": psutil.disk_usage('/').percent,
-            "process_count": len(psutil.pids())
-        }
-        
-        self.es_client.index_document("system-info", system_data)
-        print("Sistem bilgileri Elasticsearch'e gönderildi.")
-        
-        return system_data
-    
-    def run_single_collection(self):
-        """
-        Tek seferlik veri toplama
-        """
-        print(f"Veri toplama başladı - {datetime.now()}")
-        
-        try:
-            web_data = self.collect_web_info()
-            system_data = self.collect_system_info()
-            
-            print("Tüm veriler başarıyla toplandı ve Elasticsearch'e gönderildi!")
-            return web_data, system_data
+            self.data_collector = DataCollector(
+                es_host=ELASTICSEARCH_CONFIG['host'],
+                es_port=ELASTICSEARCH_CONFIG['port'],
+                es_username=ELASTICSEARCH_CONFIG['username'],
+                es_password=ELASTICSEARCH_CONFIG['password'],
+                use_ssl=ELASTICSEARCH_CONFIG['use_ssl']
+            )
+            print("✅ Data Collector başlatıldı")
             
         except Exception as e:
-            print(f"Veri toplama hatası: {e}")
-            return None, None
-    
-    def run_continuous_monitoring(self, interval=300):
-        """
-        Sürekli monitöring
-        """
-        print(f"Sürekli monitöring başladı. Aralık: {interval} saniye")
+            print(f"❌ Data Collector başlatılamadı: {e}")
+            raise
         
-        while True:
+        # Query sistemini başlat (lazy loading)
+        self.query_system = None
+        
+        # Monitoring durumu
+        self.monitoring_active = False
+        self.monitoring_thread = None
+        
+        # İndeksleri oluştur
+        self.setup_elasticsearch()
+    
+    def setup_elasticsearch(self):
+        """
+        Elasticsearch indekslerini hazırlar.
+        """
+        print("📋 Elasticsearch indeksleri kontrol ediliyor...")
+        try:
+            self.data_collector.create_indices()
+        except Exception as e:
+            print(f"⚠️ İndeks oluşturma uyarısı: {e}")
+    
+    def start_query_system(self):
+        """
+        Query sistemini lazy loading ile başlatır.
+        """
+        if self.query_system is None:
+            print("🤖 Query System başlatılıyor (bu birkaç dakika sürebilir)...")
             try:
-                self.run_single_collection()
-                print(f"Sonraki toplama: {interval} saniye sonra...")
-                time.sleep(interval)
+                self.query_system = QuerySystem(
+                    es_host=ELASTICSEARCH_CONFIG['host'],
+                    es_port=ELASTICSEARCH_CONFIG['port'],
+                    es_username=ELASTICSEARCH_CONFIG['username'],
+                    es_password=ELASTICSEARCH_CONFIG['password'],
+                    use_ssl=ELASTICSEARCH_CONFIG['use_ssl']
+                )
+                print("✅ Query System hazır!")
+            except Exception as e:
+                print(f"❌ Query System başlatılamadı: {e}")
+                return False
+        return True
+    
+    def collect_single_data(self, include_speed_test=True):
+        """
+        Tek seferlik veri toplama.
+        
+        Args:
+            include_speed_test (bool): Hız testi yapılsın mı
+            
+        Returns:
+            bool: Başarılı olup olmadığı
+        """
+        try:
+            print(f"\n📊 Veri toplama başlatıldı - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print("-" * 50)
+            
+            # Verileri topla
+            combined_data = self.data_collector.collect_all_data(
+                include_processes=True,
+                include_speed_test=include_speed_test
+            )
+            
+            if combined_data:
+                # Elasticsearch'e kaydet
+                success = self.data_collector.save_combined_data(combined_data)
                 
+                if success:
+                    print("✅ Veri toplama ve kaydetme başarılı!")
+                    self.data_collector.print_brief_summary(combined_data)
+                    return True
+                else:
+                    print("❌ Veri kaydetme başarısız!")
+                    return False
+            else:
+                print("❌ Veri toplama başarısız!")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Veri toplama hatası: {e}")
+            return False
+    
+    def monitoring_worker(self, interval=120, speed_test_interval=5):
+        """
+        Arka planda çalışan monitoring işlemi.
+        
+        Args:
+            interval (int): Toplama aralığı (saniye, varsayılan: 120 = 2 dakika)
+            speed_test_interval (int): Kaç döngüde bir hız testi yapılsın
+        """
+        print(f"🔄 Monitoring başlatıldı:")
+        print(f"   ⏰ Aralık: {interval} saniye ({interval//60} dakika)")
+        print(f"   ⚡ Hız testi: Her {speed_test_interval} döngüde bir")
+        
+        cycle_count = 0
+        
+        while self.monitoring_active:
+            try:
+                cycle_count += 1
+                
+                # Hız testi yapılacak mı?
+                do_speed_test = (cycle_count % speed_test_interval == 1)
+                
+                print(f"\n🔄 Döngü #{cycle_count} - {datetime.now().strftime('%H:%M:%S')}")
+                if do_speed_test:
+                    print("   ⚡ Bu döngüde hız testi de yapılacak")
+                
+                # Veri topla
+                success = self.collect_single_data(include_speed_test=do_speed_test)
+                
+                if success:
+                    print(f"✅ Döngü #{cycle_count} tamamlandı")
+                else:
+                    print(f"❌ Döngü #{cycle_count} başarısız")
+                
+                # Sonraki döngüye kadar bekle
+                if self.monitoring_active:
+                    print(f"⏳ Sonraki döngü: {interval} saniye sonra...")
+                    
+                    # Kesintiye karşı bölümlü bekleme
+                    for _ in range(interval):
+                        if not self.monitoring_active:
+                            break
+                        time.sleep(1)
+                        
+            except Exception as e:
+                print(f"❌ Monitoring döngüsü hatası: {e}")
+                if self.monitoring_active:
+                    print("⏳ 30 saniye bekleyip devam ediliyor...")
+                    time.sleep(30)
+        
+        print("🛑 Monitoring durduruldu")
+    
+    def start_monitoring(self, interval=120, speed_test_interval=5):
+        """
+        Monitoring'i başlatır.
+        
+        Args:
+            interval (int): Toplama aralığı (saniye)
+            speed_test_interval (int): Hız testi aralığı (döngü sayısı)
+        """
+        if self.monitoring_active:
+            print("⚠️ Monitoring zaten aktif!")
+            return
+        
+        self.monitoring_active = True
+        self.monitoring_thread = threading.Thread(
+            target=self.monitoring_worker,
+            args=(interval, speed_test_interval),
+            daemon=True
+        )
+        self.monitoring_thread.start()
+        print("✅ Monitoring arka planda başlatıldı!")
+    
+    def stop_monitoring(self):
+        """
+        Monitoring'i durdurur.
+        """
+        if not self.monitoring_active:
+            print("⚠️ Monitoring zaten durmuş!")
+            return
+        
+        print("🛑 Monitoring durduruluyor...")
+        self.monitoring_active = False
+        
+        # Thread'in bitmesini bekle
+        if self.monitoring_thread and self.monitoring_thread.is_alive():
+            self.monitoring_thread.join(timeout=5)
+        
+        print("✅ Monitoring durduruldu!")
+    
+    def show_elasticsearch_stats(self):
+        """
+        Elasticsearch istatistiklerini gösterir.
+        """
+        self.data_collector.print_elasticsearch_stats()
+    
+    def query_mode(self):
+        """
+        Query moduna geçer.
+        """
+        if not self.start_query_system():
+            return
+        
+        print("\n🤖 Query moduna geçiliyor...")
+        self.query_system.interactive_mode()
+    
+    def main_menu(self):
+        """
+        Ana menüyü görüntüler ve kullanıcı seçimlerini işler.
+        """
+        while True:
+            print("\n" + "="*60)
+            print("🖥️  SİSTEM VE AĞ MONİTORİNG UYGULAMASI")
+            print("="*60)
+            print("1. 📊 Tek seferlik veri toplama")
+            print("2. 🔄 Sürekli monitoring başlat (2 dakika aralık)")
+            print("3. 🛑 Monitoring durdur")
+            print("4. 📈 Elasticsearch istatistikleri")
+            print("5. 🤖 AI Query sistemi (DialoGPT)")
+            print("6. ⚙️  Ayarlar")
+            print("7. 🚪 Çıkış")
+            
+            # Monitoring durumu
+            status = "🟢 Aktif" if self.monitoring_active else "🔴 Durmuş"
+            print(f"\nMonitoring Durumu: {status}")
+            
+            try:
+                choice = input("\nSeçiminiz (1-7): ").strip()
+                
+                if choice == '1':
+                    print("\n📊 TEK SEFERLİK VERİ TOPLAMA")
+                    print("-" * 30)
+                    speed_test = input("Hız testi yapılsın mı? (y/n, varsayılan: y): ").strip().lower()
+                    include_speed = speed_test != 'n'
+                    self.collect_single_data(include_speed_test=include_speed)
+                
+                elif choice == '2':
+                    print("\n🔄 SÜREKLİ MONİTORİNG")
+                    print("-" * 20)
+                    
+                    # Aralık ayarı
+                    interval_input = input("Toplama aralığı (dakika, varsayılan: 2): ").strip()
+                    try:
+                        interval_minutes = int(interval_input) if interval_input else 2
+                        interval_seconds = interval_minutes * 60
+                    except ValueError:
+                        interval_seconds = 120  # 2 dakika varsayılan
+                    
+                    # Hız testi aralığı
+                    speed_interval_input = input("Kaç döngüde bir hız testi? (varsayılan: 5): ").strip()
+                    try:
+                        speed_interval = int(speed_interval_input) if speed_interval_input else 5
+                    except ValueError:
+                        speed_interval = 5
+                    
+                    self.start_monitoring(interval_seconds, speed_interval)
+                
+                elif choice == '3':
+                    self.stop_monitoring()
+                
+                elif choice == '4':
+                    print("\n📈 ELASTICSEARCH İSTATİSTİKLERİ")
+                    print("-" * 30)
+                    self.show_elasticsearch_stats()
+                
+                elif choice == '5':
+                    print("\n🤖 AI QUERY SİSTEMİ")
+                    print("-" * 20)
+                    self.query_mode()
+                
+                elif choice == '6':
+                    self.settings_menu()
+                
+                elif choice == '7':
+                    print("\n🚪 Çıkış yapılıyor...")
+                    self.stop_monitoring()  # Monitoring varsa durdur
+                    print("👋 Görüşürüz!")
+                    break
+                
+                else:
+                    print("⚠️ Geçersiz seçim! Lütfen 1-7 arası bir sayı girin.")
+                    
             except KeyboardInterrupt:
-                print("\nMonitöring durduruldu.")
+                print("\n\n🛑 Uygulama kesintiye uğradı...")
+                self.stop_monitoring()
+                print("👋 Görüşürüz!")
                 break
             except Exception as e:
-                print(f"Monitöring hatası: {e}")
-                time.sleep(60)
+                print(f"❌ Menü hatası: {e}")
     
-    def search_recent_data(self, index_name="web-info", hours=24):
+    def settings_menu(self):
         """
-        Son X saatteki verileri arar
+        Ayarlar menüsü.
         """
-        end_time = datetime.now()
-        start_time = end_time - timedelta(hours=hours)
-        
-        query = {
-            "range": {
-                "timestamp": {
-                    "gte": start_time.isoformat(),
-                    "lte": end_time.isoformat()
-                }
-            }
-        }
-        
-        results = self.es_client.search(index_name, query, size=100)
-        print(f"Son {hours} saatte {len(results)} kayıt bulundu.")
-        
-        return results
-
-def main():
-    # Elasticsearch ayarları
-    ES_HOST = 'localhost'
-    ES_PORT = 9200
-    ES_USERNAME = None
-    ES_PASSWORD = None
-    
-    try:
-        monitor = SystemMonitor(
-            es_host=ES_HOST,
-            es_port=ES_PORT,
-            es_username=ES_USERNAME,
-            es_password=ES_PASSWORD
-        )
-        
         while True:
-            print("\n=== Sistem Monitörü ===")
-            print("1. Tek seferlik veri toplama")
-            print("2. Sürekli monitöring başlat")
-            print("3. Son 24 saatteki web verilerini göster")
-            print("4. Son 24 saatteki sistem verilerini göster")
-            print("5. Çıkış")
+            print("\n" + "="*40)
+            print("⚙️  AYARLAR")
+            print("="*40)
+            print("1. 📊 Elasticsearch bağlantı testi")
+            print("2. 🌐 Web bağlantı testi")
+            print("3. 💻 Sistem bilgilerini göster")
+            print("4. 🔙 Ana menüye dön")
             
-            choice = input("\nSeçiminiz (1-5): ").strip()
+            choice = input("\nSeçiminiz (1-4): ").strip()
             
             if choice == '1':
-                monitor.run_single_collection()
+                print("\n📊 ELASTICSEARCH BAĞLANTI TESTİ")
+                print("-" * 30)
+                try:
+                    stats = self.data_collector.get_elasticsearch_stats()
+                    if stats:
+                        print("✅ Elasticsearch bağlantısı başarılı!")
+                        print(f"Cluster durumu: {stats['cluster_health'].get('status', 'N/A')}")
+                    else:
+                        print("❌ Elasticsearch bağlantısı başarısız!")
+                except Exception as e:
+                    print(f"❌ Bağlantı testi hatası: {e}")
             
             elif choice == '2':
-                interval = input("Veri toplama aralığı (saniye, varsayılan 300): ").strip()
-                interval = int(interval) if interval.isdigit() else 300
-                monitor.run_continuous_monitoring(interval)
+                print("\n🌐 WEB BAĞLANTI TESTİ")
+                print("-" * 20)
+                from web import WebInfo
+                web_info = WebInfo()
+                ip_result = web_info.get_ip_info()
+                if ip_result:
+                    print("✅ İnternet bağlantısı başarılı!")
+                    web_info.print_summary()
+                else:
+                    print("❌ İnternet bağlantısı başarısız!")
             
             elif choice == '3':
-                results = monitor.search_recent_data("web-info", 24)
-                for i, result in enumerate(results[:5]):
-                    print(f"\n{i+1}. {result['_source']}")
+                print("\n💻 SİSTEM BİLGİLERİ")
+                print("-" * 20)
+                from system_monitor import SystemMonitor
+                system_monitor = SystemMonitor()
+                system_monitor.print_summary()
             
             elif choice == '4':
-                results = monitor.search_recent_data("system-info", 24)
-                for i, result in enumerate(results[:5]):
-                    print(f"\n{i+1}. {result['_source']}")
-            
-            elif choice == '5':
-                print("Çıkılıyor...")
                 break
             
             else:
-                print("Geçersiz seçim!")
+                print("⚠️ Geçersiz seçim!")
+
+def main():
+    """
+    Ana fonksiyon.
+    """
+    print("🎯 Monitoring Uygulaması Başlatılıyor...")
+    print("="*60)
     
+    try:
+        app = MonitoringApp()
+        app.main_menu()
+        
+    except KeyboardInterrupt:
+        print("\n👋 Uygulama kapatılıyor...")
     except Exception as e:
-        print(f"Ana uygulama hatası: {e}")
+        print(f"❌ Kritik hata: {e}")
+        print("Lütfen Elasticsearch'in çalıştığından emin olun.")
 
 if __name__ == "__main__":
     main()
