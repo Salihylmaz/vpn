@@ -1,3 +1,32 @@
+# Sanal ortam
 venv/
-*.lib
+.env/
+ENV/
+env/
+
+# Python cache dosyaları
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Platform bağımlı dosyalar
 *.dll
+*.so
+*.dylib
+*.lib
+*.exe
+
+# IDE / Editor dosyaları
+.vscode/
+.idea/
+
+# Geçici dosyalar
+*.log
+*.tmp
+
+# Veri dosyaları (opsiyonel)
+*.csv
+*.tsv
+*.json
+*.pkl
