@@ -1,4 +1,6 @@
 import torch
+import sys
+import os
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from elasticsearch_client_v8 import ElasticsearchClient
 from config import USER_CONFIG
@@ -8,11 +10,11 @@ import re
 
 class QuerySystem:
     """
-    DialoGPT-medium modelini kullanarak Elasticsearch'ten veri sorgulayan sistem.
+    Qwen2.5-3B-Instruct modelini kullanarak Elasticsearch'ten veri sorgulayan sistem.
     """
     
     def __init__(self, es_host='localhost', es_port=9200, es_username=None, es_password=None, use_ssl=False):
-        print("🤖 DialoGPT Query System başlatılıyor...")
+        print("🤖 Qwen2.5 Query System başlatılıyor...")
         
         # Elasticsearch bağlantısı
         self.es_client = ElasticsearchClient(
@@ -24,12 +26,54 @@ class QuerySystem:
         )
         
         # Model ve tokenizer'ı yükle
-        print("📥 DialoGPT-medium modeli yükleniyor...")
+        print("📥 LLM modeli yükleniyor...")
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
-            self.model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-medium")
+            # Performans: CPU thread sayısını sınırla
+            try:
+                configured_threads = int(os.environ.get("TORCH_NUM_THREADS", "0"))
+            except Exception:
+                configured_threads = 0
+            if configured_threads <= 0:
+                cpu_count = os.cpu_count() or 4
+                configured_threads = min(4, cpu_count)
+            torch.set_num_threads(configured_threads)
+            print(f"🧵 Torch threads: {configured_threads}")
+
+            # Varsayılan: Qwen2.5-3B-Instruct; isterseniz MODEL_NAME ile override edebilirsiniz
+            model_name = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
+            print(f"🧠 Model: {model_name}")
+
+            # HF Transformers yolu (Qwen tokenizer)
+            hf_token = os.environ.get("HF_TOKEN")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                use_fast=True,
+                token=hf_token
+            )
+            # Cihaz ve dtype seçimi
+            use_cuda = torch.cuda.is_available()
+            model_kwargs = {
+                "low_cpu_mem_usage": not use_cuda,
+            }
+            if use_cuda:
+                model_kwargs.update({
+                    "torch_dtype": torch.float16,
+                    "device_map": "auto"
+                })
+                print("🟢 CUDA bulundu, model GPU'da yüklenecek (fp16)")
+            else:
+                model_kwargs.update({
+                    "torch_dtype": torch.float32
+                })
+                print("🟠 CUDA yok, model CPU'da yüklenecek (fp32) - yükleme biraz zaman alabilir")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                token=hf_token,
+                **model_kwargs
+            )
+            self.model.eval()
             
-            # Pad token ekle (DialoGPT için gerekli)
+            # Pad token ekle
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
             
@@ -73,6 +117,18 @@ class QuerySystem:
                 'hours': int(m.group(1)) if m.group(2) == 'saat' else 0,
                 'days': int(m.group(1)) if m.group(2) == 'gün' else 0
             },
+            r'(\d+) hafta önce': lambda m: {
+                'days_ago': int(m.group(1)) * 7,
+                'period': 'week'
+            },
+            r'(\d+) gün önce': lambda m: {
+                'days_ago': int(m.group(1)),
+                'period': 'day'
+            },
+            r'(\d+) ay önce': lambda m: {
+                'days_ago': int(m.group(1)) * 30,
+                'period': 'month'
+            },
             r'(\d{1,2}):(\d{2})': lambda m: {
                 'specific_time': f"{m.group(1).zfill(2)}:{m.group(2)}"
             },
@@ -107,6 +163,11 @@ class QuerySystem:
                         yesterday = now - timedelta(days=1)
                         start_time = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
                         end_time = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
+                elif 'days_ago' in time_info:
+                    # N gün/hafta/ay önceki günün tamamı
+                    target_day = now - timedelta(days=time_info['days_ago'])
+                    start_time = target_day.replace(hour=0, minute=0, second=0, microsecond=0)
+                    end_time = target_day.replace(hour=23, minute=59, second=59, microsecond=999999)
                 else:
                     # Süre bazlı
                     delta = timedelta(
@@ -414,43 +475,69 @@ class QuerySystem:
         except Exception as e:
             return self.response_templates["error"].format(error=str(e))
     
-    def generate_response_with_dialogpt(self, context, max_length=100):
+    def generate_response_with_qwen(self, context, max_new_tokens=64):
         """
-        DialoGPT ile yanıt üretir.
+        Qwen Instruct ile yanıt üretir.
         
         Args:
-            context (str): Kontext bilgisi
-            max_length (int): Maksimum yanıt uzunluğu
+            context (str): Bağlam + yapılandırılmış çıktı içeren metin
+            max_new_tokens (int): Üretilecek yeni token sayısı
             
         Returns:
             str: Üretilen yanıt
         """
         try:
-            # Tokenize et
-            inputs = self.tokenizer.encode(context + self.tokenizer.eos_token, return_tensors='pt')
-            
-            # Attention mask oluştur
-            attention_mask = torch.ones_like(inputs)
-            
-            # Yanıt üret
+            # Qwen chat biçimi (chat template varsa kullanılır)
+            system_prompt = "You are a helpful assistant. Respond concisely in Turkish."
+            # Chat template varsa kullan, yoksa düz prompt'a düş
+            if hasattr(self.tokenizer, "apply_chat_template") and callable(getattr(self.tokenizer, "apply_chat_template")):
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": context},
+                ]
+                prompt_ids = self.tokenizer.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True,
+                    return_tensors="pt"
+                )
+                inputs = {"input_ids": prompt_ids}
+            else:
+                prompt = f"System: {system_prompt}\nUser: {context}\nAssistant:"
+                inputs = self.tokenizer(prompt, return_tensors="pt")
+
+            # Attention mask'i açıkça geç (pad=eos durumunda uyarıyı önler)
+            if "attention_mask" in inputs:
+                attention_mask = inputs["attention_mask"]
+            else:
+                attention_mask = torch.ones_like(inputs["input_ids"]) 
+            # Maksimum üretim süresi (takılmaları engelle)
+            try:
+                max_time = float(os.environ.get("GEN_MAX_TIME", "20"))
+            except Exception:
+                max_time = 20.0
             with torch.no_grad():
                 outputs = self.model.generate(
-                    inputs,
+                    **inputs,
                     attention_mask=attention_mask,
-                    max_length=inputs.shape[1] + max_length,
-                    num_beams=3,
+                    max_new_tokens=max_new_tokens,
                     do_sample=True,
                     temperature=0.7,
+                    top_p=0.9,
+                    eos_token_id=self.tokenizer.eos_token_id,
                     pad_token_id=self.tokenizer.eos_token_id,
-                    no_repeat_ngram_size=2
+                    repetition_penalty=1.1,
+                    no_repeat_ngram_size=2,
+                    use_cache=True,
+                    max_time=max_time
                 )
-            
-            # Decode et
-            response = self.tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
-            return response.strip()
-            
+            generated = outputs[0].to("cpu")
+            start_idx = 0
+            if isinstance(inputs, dict) and "input_ids" in inputs:
+                start_idx = inputs["input_ids"].shape[1]
+            text = self.tokenizer.decode(generated[start_idx:], skip_special_tokens=True)
+            return text.strip()
         except Exception as e:
-            print(f"❌ DialoGPT yanıt üretme hatası: {e}")
+            print(f"❌ Qwen yanıt üretme hatası: {e}")
             return "Yanıt üretemedim, teknik bir sorun oluştu."
     
     def process_query(self, user_query):
@@ -481,16 +568,24 @@ class QuerySystem:
         # 4. Yanıtı formatla
         structured_response = self.format_response(intent, data, time_range)
         
-        # 5. DialoGPT ile doğal yanıt üret
-        # Daha iyi yönlendirme: intent ve zaman aralığını bağlama ekle
-        context = (
-            f"Soru: {user_query}\n"
-            f"Amaç: {intent['intent']}\n"
-            f"Zaman: {time_range['start_time']} - {time_range['end_time']}\n"
-            f"Bulunan: {structured_response}\n"
-            f"Kısa, net bir yanıt ver:"
-        )
-        natural_response = self.generate_response_with_dialogpt(context)
+        # 5. Yanıt üretimi
+        # Yapısal cevap yeterliyse LLM'i kullanma (hız ve doğruluk için)
+        deterministic_intents = {
+            'vpn_status', 'speed_info', 'system_info', 'location_info',
+            'device_listing', 'time_analysis', 'data_coverage'
+        }
+        if intent['intent'] in deterministic_intents:
+            natural_response = structured_response
+        else:
+            # Daha iyi yönlendirme: intent ve zaman aralığını bağlama ekle
+            context = (
+                f"Soru: {user_query}\n"
+                f"Amaç: {intent['intent']}\n"
+                f"Zaman: {time_range['start_time']} - {time_range['end_time']}\n"
+                f"Bulunan: {structured_response}\n"
+                f"Kısa, net bir yanıt ver:"
+            )
+            natural_response = self.generate_response_with_qwen(context)
         
         result = {
             "query": user_query,
@@ -510,7 +605,7 @@ class QuerySystem:
         Etkileşimli soru-cevap modu.
         """
         print("\n" + "="*60)
-        print("🤖 DialoGPT Query System - Etkileşimli Mod")
+        print("🤖 Qwen2.5 Query System - Etkileşimli Mod")
         print("="*60)
         print("Sistem ve ağ verileriniz hakkında soru sorabilirsiniz!")
         print("Örnek sorular:")
@@ -562,7 +657,7 @@ def main():
         
         # Test sorguları
         test_queries = [
-            "Son 1 saatte VPN bağlı mıydı?",
+            "Son 120 saatte VPN bağlı mıydı?",
             "Bugün internet hızı nasıl?",
             "Sistem durumu nedir?",
             "Hangi ülkede görünüyorum?"
