@@ -8,6 +8,12 @@ ELASTICSEARCH_CONFIG = {
     'verify_certs': False
 }
 
+# User/tenant configuration (çoklu kullanıcı desteği)
+USER_CONFIG = {
+    'user_id': 'default_user',   # Her kullanıcı için benzersiz bir kimlik atayın
+    'device_id': None            # Boş bırakılırsa cihaz adı otomatik alınır
+}
+
 # Index Names
 INDICES = {
     'web_info': 'web-info',
