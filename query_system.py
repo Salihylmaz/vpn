@@ -488,7 +488,15 @@ class QuerySystem:
         """
         try:
             # Qwen chat biçimi (chat template varsa kullanılır)
-            system_prompt = "You are a helpful assistant. Respond concisely in Turkish."
+            system_prompt = """
+                    Sen bir Türkçe konuşan akıllı asistanısın. 
+                    Görevin: kullanıcının sorusunu anlamak, bağlamı dikkate almak ve kısa, net, anlaşılır şekilde cevap vermek. 
+                    Yanıtlarında:
+                    - Gereksiz tekrar yapma.
+                    - Türkçe dil bilgisine dikkat et.
+                    - Eğer bağlam yeterli değilse, kullanıcıya açıklama sor.
+                    - Yanıtlarda doğrudan, samimi ve profesyonel ol.
+                    """
             # Chat template varsa kullan, yoksa düz prompt'a düş
             if hasattr(self.tokenizer, "apply_chat_template") and callable(getattr(self.tokenizer, "apply_chat_template")):
                 messages = [
