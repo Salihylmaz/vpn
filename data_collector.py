@@ -4,6 +4,7 @@ import json
 from elasticsearch_client_v8 import ElasticsearchClient
 from system_monitor import SystemMonitor
 from web import WebInfo
+from config import USER_CONFIG
 
 class DataCollector:
     """
@@ -173,6 +174,11 @@ class DataCollector:
                 "web_data": web_mapping["properties"]
             }
         }
+
+        # Çoklu kullanıcı alanlarını tüm indekslere ekle
+        for mapping in (system_mapping, web_mapping, combined_mapping):
+            mapping["properties"]["user_id"] = {"type": "keyword"}
+            mapping["properties"]["device_id"] = {"type": "keyword"}
         
         # İndeksleri oluştur
         self.es_client.create_index("system-monitoring", system_mapping)
@@ -233,6 +239,21 @@ class DataCollector:
             "web_data": web_data
         }
         
+        # Çoklu kullanıcı/cihaz etiketleri ekle
+        user_id = USER_CONFIG.get('user_id', 'default_user')
+        device_id = USER_CONFIG.get('device_id') or self.system_monitor.get_complete_system_info(include_processes=False).get('system', {}).get('platform', {}).get('node', 'unknown-device')
+
+        combined_data['user_id'] = user_id
+        combined_data['device_id'] = device_id
+        
+        # Alt veri bloklarına da etiketleri ekle (kolay filtreleme için)
+        if isinstance(combined_data.get('system_data'), dict):
+            combined_data['system_data']['user_id'] = user_id
+            combined_data['system_data']['device_id'] = device_id
+        if isinstance(combined_data.get('web_data'), dict):
+            combined_data['web_data']['user_id'] = user_id
+            combined_data['web_data']['device_id'] = device_id
+
         return combined_data
     
     def save_to_elasticsearch(self, data, index_name="combined-monitoring"):
@@ -406,10 +427,27 @@ class DataCollector:
                 try:
                     stats = self.es_client.get_index_stats(index)
                     if stats:
-                        doc_count = stats['_all']['total']['docs']['count']
-                        size_mb = stats['_all']['total']['store']['size_in_bytes'] / (1024 * 1024)
+                        # ES 8.x tek indeks stats yapısı: stats['total'] içinde docs/store bilgileri
+                        # Alternatif olarak stats['primaries'] olabilir; ikisini de destekle
+                        total_section = stats.get('total', {})
+                        primaries_section = stats.get('primaries', {})
+
+                        doc_count = (
+                            total_section.get('docs', {}).get('count')
+                            if total_section.get('docs') is not None
+                            else primaries_section.get('docs', {}).get('count', 0)
+                        )
+
+                        size_bytes = (
+                            total_section.get('store', {}).get('size_in_bytes')
+                            if total_section.get('store') is not None
+                            else primaries_section.get('store', {}).get('size_in_bytes', 0)
+                        )
+
+                        size_mb = (size_bytes or 0) / (1024 * 1024)
+
                         stats_info[index] = {
-                            "document_count": doc_count,
+                            "document_count": doc_count or 0,
                             "size_mb": round(size_mb, 2)
                         }
                 except:

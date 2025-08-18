@@ -1,6 +1,7 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from elasticsearch_client_v8 import ElasticsearchClient
+from config import USER_CONFIG
 from datetime import datetime, timedelta
 import json
 import re
@@ -44,6 +45,9 @@ class QuerySystem:
             "speed_info": "Hız bilgisi - İndirme: {download} Mbps, Yükleme: {upload} Mbps, Ping: {ping} ms",
             "system_info": "Sistem durumu - CPU: {cpu}%, RAM: {memory}%, Disk: {disk}%",
             "location_info": "Konum bilgisi: {city}, {country} ({ip})",
+            "device_listing": "Cihaz listesi: {devices}",
+            "time_analysis": "Zaman analizi: {time_info}",
+            "data_coverage": "Veri kapsamı: {coverage_info}",
             "time_based": "{time} tarihinde {info}",
             "not_found": "Belirtilen zamanda/kriterde veri bulunamadı.",
             "error": "Sorgu işlenirken hata oluştu: {error}"
@@ -75,7 +79,9 @@ class QuerySystem:
             r'bugün': lambda m: {'days': 0, 'specific_day': 'today'},
             r'dün': lambda m: {'days': 1, 'specific_day': 'yesterday'},
             r'bu sabah': lambda m: {'hours': 12, 'specific_period': 'morning'},
-            r'bu akşam': lambda m: {'hours': 6, 'specific_period': 'evening'}
+            r'bu akşam': lambda m: {'hours': 6, 'specific_period': 'evening'},
+            r'bu hafta': lambda m: {'days': 7, 'specific_period': 'week'},
+            r'bu ay': lambda m: {'days': 30, 'specific_period': 'month'}
         }
         
         for pattern, handler in time_patterns.items():
@@ -90,6 +96,17 @@ class QuerySystem:
                     target_time = now.replace(hour=int(time_parts[0]), minute=int(time_parts[1]), second=0, microsecond=0)
                     start_time = target_time - timedelta(minutes=30)  # ±30 dakika aralık
                     end_time = target_time + timedelta(minutes=30)
+                elif 'specific_day' in time_info:
+                    # Belirli gün
+                    if time_info['specific_day'] == 'today':
+                        # Bugün: günün başından şu ana kadar
+                        start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                        end_time = now
+                    elif time_info['specific_day'] == 'yesterday':
+                        # Dün: dünün başından sonuna kadar
+                        yesterday = now - timedelta(days=1)
+                        start_time = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+                        end_time = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
                 else:
                     # Süre bazlı
                     delta = timedelta(
@@ -125,40 +142,63 @@ class QuerySystem:
         """
         query = query.lower()
         
-        # Amaç kalıpları
+        # Gelişmiş amaç kalıpları - daha detaylı ve esnek
         intent_patterns = {
             'vpn_status': [
                 r'vpn.*bağlı', r'vpn.*kullan', r'vpn.*aktif', r'vpn.*durum',
-                r'proxy.*kullan', r'bağlantı.*güvenli'
+                r'proxy.*kullan', r'bağlantı.*güvenli', r'vpn.*çalış'
             ],
             'speed_info': [
                 r'hız.*test', r'internet.*hız', r'download.*speed', r'upload.*speed',
-                r'ping', r'bant.*genişlik', r'mbps'
+                r'ping', r'bant.*genişlik', r'mbps', r'bağlantı.*hız'
             ],
             'system_info': [
                 r'sistem.*durum', r'cpu.*kullan', r'ram.*kullan', r'bellek.*kullan',
-                r'disk.*kullan', r'performans'
+                r'disk.*kullan', r'performans', r'bilgisayar.*durum'
             ],
             'location_info': [
-                r'ip.*adres', r'konum', r'nerde', r'hangi.*şehir', r'hangi.*ülke'
+                r'ip.*adres', r'konum', r'nerde', r'hangi.*şehir', r'hangi.*ülke',
+                r'ülke.*nerde', r'şehir.*nerde'
+            ],
+            'device_listing': [
+                r'hangi.*bilgisayar', r'kaç.*bilgisayar', r'cihaz.*listesi', r'bilgisayar.*listesi',
+                r'cihaz.*var', r'bilgisayar.*var', r'device.*list', r'computer.*list'
+            ],
+            'time_analysis': [
+                r'hangi.*saat', r'kaç.*saat', r'saat.*aralık', r'zaman.*aralık',
+                r'ne.*zaman', r'zaman.*bilgi', r'time.*range', r'hour.*range'
+            ],
+            'data_coverage': [
+                r'veri.*var', r'bilgi.*var', r'kayıt.*var', r'data.*available',
+                r'coverage', r'kapsam', r'mevcut.*veri'
             ],
             'general_status': [
-                r'durum.*nedir', r'ne.*olmuş', r'bilgi.*ver', r'özet'
+                r'durum.*nedir', r'ne.*olmuş', r'bilgi.*ver', r'özet', r'genel.*durum'
             ]
         }
         
         for intent, patterns in intent_patterns.items():
             for pattern in patterns:
-                if re.search(pattern, query):
+                match = re.search(pattern, query)
+                if match:
                     return {
                         'intent': intent,
-                        'confidence': 0.8,
+                        'confidence': 0.9,
                         'matched_pattern': pattern
                     }
         
+        # Eğer hiçbir kalıp eşleşmezse, daha akıllı tahmin yap
+        query_words = query.split()
+        if any(word in query_words for word in ['bilgisayar', 'cihaz', 'computer', 'device']):
+            return {'intent': 'device_listing', 'confidence': 0.7, 'matched_pattern': 'word_based'}
+        elif any(word in query_words for word in ['saat', 'zaman', 'time', 'hour']):
+            return {'intent': 'time_analysis', 'confidence': 0.7, 'matched_pattern': 'word_based'}
+        elif any(word in query_words for word in ['veri', 'bilgi', 'data', 'kayıt']):
+            return {'intent': 'data_coverage', 'confidence': 0.7, 'matched_pattern': 'word_based'}
+        
         return {
             'intent': 'general_status',
-            'confidence': 0.5,
+            'confidence': 0.6,
             'matched_pattern': 'default'
         }
     
@@ -173,6 +213,10 @@ class QuerySystem:
         Returns:
             dict: Elasticsearch sorgu objesi
         """
+        # Kullanıcı/cihaz filtresi - sadece gerekirse ekle
+        user_id = USER_CONFIG.get('user_id', 'default_user')
+        device_id = USER_CONFIG.get('device_id')
+
         base_query = {
             "query": {
                 "bool": {
@@ -191,6 +235,13 @@ class QuerySystem:
             "sort": [{"collection_timestamp": {"order": "desc"}}],
             "size": 10
         }
+        
+        # Kullanıcı filtresi sadece gerekirse ekle (veri varsa)
+        if user_id and user_id != 'default_user':
+            base_query["query"]["bool"]["must"].append({"term": {"user_id": user_id}})
+        
+        if device_id:
+            base_query["query"]["bool"]["must"].append({"term": {"device_id": device_id}})
         
         # Amaca göre ek filtreler
         if intent['intent'] == 'vpn_status':
@@ -215,6 +266,7 @@ class QuerySystem:
             query = self.build_elasticsearch_query(intent, time_range)
             results = self.es_client.search("combined-monitoring", query.get("query"), query.get("size", 10))
             
+            # 'search' metodu hits listesi döndürüyor; onu normalize etmiştik
             return [hit['_source'] for hit in results]
             
         except Exception as e:
@@ -275,6 +327,68 @@ class QuerySystem:
                         ip=latest_data.get('web_data', {}).get('ip_address', 'N/A')
                     )
             
+            elif intent['intent'] == 'device_listing':
+                # Tüm verilerdeki benzersiz cihazları bul
+                devices = set()
+                for data_item in data:
+                    device_id = data_item.get('device_id', 'Bilinmeyen Cihaz')
+                    user_id = data_item.get('user_id', 'Bilinmeyen Kullanıcı')
+                    devices.add(f"{user_id}@{device_id}")
+                
+                if devices:
+                    device_list = ", ".join(sorted(devices))
+                    return f"Cihaz listesi ({len(devices)} adet): {device_list}"
+                else:
+                    return "Cihaz bilgisi bulunamadı."
+            
+            elif intent['intent'] == 'time_analysis':
+                # Zaman aralığındaki veri dağılımını analiz et
+                if not data:
+                    return "Zaman analizi için veri bulunamadı."
+                
+                # Zaman aralığını parse et
+                start_time = time_range['start_time']
+                end_time = time_range['end_time']
+                
+                # Veri sayısını hesapla
+                data_count = len(data)
+                
+                # İlk ve son kayıt zamanını bul
+                timestamps = [item.get('collection_timestamp') for item in data if item.get('collection_timestamp')]
+                if timestamps:
+                    timestamps.sort()
+                    first_time = timestamps[0][:16]  # YYYY-MM-DD HH:MM formatında
+                    last_time = timestamps[-1][:16]
+                    
+                    return f"Zaman analizi: {start_time[:10]} tarihinde {data_count} kayıt var. " \
+                           f"İlk kayıt: {first_time}, Son kayıt: {last_time}"
+                else:
+                    return f"Zaman analizi: {start_time[:10]} tarihinde {data_count} kayıt var."
+            
+            elif intent['intent'] == 'data_coverage':
+                # Veri kapsamını analiz et
+                if not data:
+                    return "Veri kapsamı analizi için veri bulunamadı."
+                
+                # Veri türlerini say
+                data_types = {}
+                for item in data:
+                    if item.get('system_data'):
+                        data_types['system'] = data_types.get('system', 0) + 1
+                    if item.get('web_data'):
+                        data_types['web'] = data_types.get('web', 0) + 1
+                
+                coverage_info = []
+                if data_types.get('system'):
+                    coverage_info.append(f"Sistem verisi: {data_types['system']} kayıt")
+                if data_types.get('web'):
+                    coverage_info.append(f"Web verisi: {data_types['web']} kayıt")
+                
+                total_records = len(data)
+                coverage_summary = f"Toplam {total_records} kayıt. " + " | ".join(coverage_info)
+                
+                return coverage_summary
+            
             # Genel durum
             response_parts = []
             
@@ -315,10 +429,14 @@ class QuerySystem:
             # Tokenize et
             inputs = self.tokenizer.encode(context + self.tokenizer.eos_token, return_tensors='pt')
             
+            # Attention mask oluştur
+            attention_mask = torch.ones_like(inputs)
+            
             # Yanıt üret
             with torch.no_grad():
                 outputs = self.model.generate(
                     inputs,
+                    attention_mask=attention_mask,
                     max_length=inputs.shape[1] + max_length,
                     num_beams=3,
                     do_sample=True,
@@ -364,7 +482,14 @@ class QuerySystem:
         structured_response = self.format_response(intent, data, time_range)
         
         # 5. DialoGPT ile doğal yanıt üret
-        context = f"Kullanıcı sorusu: {user_query}\nBulunan bilgi: {structured_response}\nYanıt:"
+        # Daha iyi yönlendirme: intent ve zaman aralığını bağlama ekle
+        context = (
+            f"Soru: {user_query}\n"
+            f"Amaç: {intent['intent']}\n"
+            f"Zaman: {time_range['start_time']} - {time_range['end_time']}\n"
+            f"Bulunan: {structured_response}\n"
+            f"Kısa, net bir yanıt ver:"
+        )
         natural_response = self.generate_response_with_dialogpt(context)
         
         result = {
@@ -393,6 +518,9 @@ class QuerySystem:
         print("- '14:30'da internet hızı nasıldı?'")
         print("- 'Bugün sistem performansı nasıl?'")
         print("- 'Dün akşam hangi ülkede görünüyordum?'")
+        print("- 'Bugün hangi bilgisayarların verisi var?'")
+        print("- 'Bu hafta hangi saatlerde veri toplandı?'")
+        print("- 'Son 1 günde kaç kayıt var?'")
         print("Çıkmak için 'quit' yazın.")
         print("="*60)
         

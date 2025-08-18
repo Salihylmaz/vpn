@@ -77,12 +77,13 @@ class MonitoringApp:
                 return False
         return True
     
-    def collect_single_data(self, include_speed_test=True):
+    def collect_single_data(self, include_speed_test=True, save_separate=True):
         """
         Tek seferlik veri toplama.
         
         Args:
             include_speed_test (bool): Hız testi yapılsın mı
+            save_separate (bool): Sistem ve web verilerini ayrı indekslere de kaydet
             
         Returns:
             bool: Başarılı olup olmadığı
@@ -98,8 +99,15 @@ class MonitoringApp:
             )
             
             if combined_data:
-                # Elasticsearch'e kaydet
+                # Elasticsearch'e kaydet (birleşik)
                 success = self.data_collector.save_combined_data(combined_data)
+                
+                # İsteğe bağlı: Ayrı indekslere de kaydet
+                if success and save_separate:
+                    if combined_data.get('system_data'):
+                        self.data_collector.save_system_data(combined_data['system_data'])
+                    if combined_data.get('web_data'):
+                        self.data_collector.save_web_data(combined_data['web_data'])
                 
                 if success:
                     print("✅ Veri toplama ve kaydetme başarılı!")
@@ -116,7 +124,7 @@ class MonitoringApp:
             print(f"❌ Veri toplama hatası: {e}")
             return False
     
-    def monitoring_worker(self, interval=120, speed_test_interval=5):
+    def monitoring_worker(self, interval=120, speed_test_interval=5, save_separate=True):
         """
         Arka planda çalışan monitoring işlemi.
         
@@ -142,7 +150,7 @@ class MonitoringApp:
                     print("   ⚡ Bu döngüde hız testi de yapılacak")
                 
                 # Veri topla
-                success = self.collect_single_data(include_speed_test=do_speed_test)
+                success = self.collect_single_data(include_speed_test=do_speed_test, save_separate=save_separate)
                 
                 if success:
                     print(f"✅ Döngü #{cycle_count} tamamlandı")
@@ -167,7 +175,7 @@ class MonitoringApp:
         
         print("🛑 Monitoring durduruldu")
     
-    def start_monitoring(self, interval=120, speed_test_interval=5):
+    def start_monitoring(self, interval=120, speed_test_interval=5, save_separate=True):
         """
         Monitoring'i başlatır.
         
@@ -182,7 +190,7 @@ class MonitoringApp:
         self.monitoring_active = True
         self.monitoring_thread = threading.Thread(
             target=self.monitoring_worker,
-            args=(interval, speed_test_interval),
+            args=(interval, speed_test_interval, save_separate),
             daemon=True
         )
         self.monitoring_thread.start()
