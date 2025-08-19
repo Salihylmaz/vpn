@@ -241,7 +241,7 @@ class MonitoringApp:
             print("2. 🔄 Sürekli monitoring başlat (2 dakika aralık)")
             print("3. 🛑 Monitoring durdur")
             print("4. 📈 Elasticsearch istatistikleri")
-            print("5. 🤖 AI Query sistemi (DialoGPT)")
+            print("5. 🤖 AI Query sistemi (Qwen)")
             print("6. ⚙️  Ayarlar")
             print("7. 🚪 Çıkış")
             
