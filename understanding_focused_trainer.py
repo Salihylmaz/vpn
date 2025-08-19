@@ -1,4 +1,4 @@
-# fixed_understanding_trainer_v2.py
+# fixed_understanding_trainer_v3.py
 import os
 import random
 import math
@@ -259,12 +259,12 @@ def create_fixed_training_args(output_dir: str = "./qwen_understanding_model"):
     return TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=3,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=1,  # Küçük batch size
+        per_device_eval_batch_size=1,
+        gradient_accumulation_steps=8,  # Büyük effective batch için
         learning_rate=2e-5,
         warmup_steps=50,
-        eval_strategy="steps",  # evaluation_strategy yerine eval_strategy
+        eval_strategy="steps",
         eval_steps=50,
         save_steps=100,
         load_best_model_at_end=True,
@@ -282,17 +282,17 @@ def create_fixed_training_args(output_dir: str = "./qwen_understanding_model"):
         optim="adamw_torch",
         save_safetensors=True,
         seed=42,
-        prediction_loss_only=True,  # Sadece loss hesapla
-        group_by_length=False,  # Basit tutmak için
+        prediction_loss_only=True,
+        group_by_length=True,  # Benzer uzunlukları grupla
     )
 
 def create_optimized_lora_config():
     """Optimize edilmiş LoRA konfigürasyonu"""
     return LoraConfig(
         task_type=TaskType.CAUSAL_LM,
-        r=16,  # Daha küçük rank
-        lora_alpha=32,  # r'nin 2 katı
-        lora_dropout=0.1,
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.05,
         target_modules=[
             "q_proj",
             "k_proj", 
@@ -307,18 +307,22 @@ def create_optimized_lora_config():
     )
 
 def tokenize_function(examples, tokenizer, max_length=512):
-    """Tokenization fonksiyonu"""
-    # Metinleri tokenize et
+    """DÜZELTILMIŞ Tokenization fonksiyonu"""
+    
+    # Girdi metinlerini al
+    texts = examples["text"]
+    
+    # Her metin için tokenize et - padding=False, truncation=True
     model_inputs = tokenizer(
-        examples["text"],
+        texts,
         truncation=True,
-        padding=False,  # DataCollator'da padding yapılacak
+        padding=False,  # Burada padding yapmıyoruz, DataCollator yapacak
         max_length=max_length,
-        return_tensors="pt"
+        return_tensors=None  # Tensor olarak değil, liste olarak döndür
     )
     
-    # Labels'ı input_ids'in kopyası yap (causal LM için)
-    model_inputs["labels"] = model_inputs["input_ids"].clone()
+    # Labels'ı input_ids'in kopyası yap
+    model_inputs["labels"] = [ids.copy() for ids in model_inputs["input_ids"]]
     
     return model_inputs
 
@@ -327,17 +331,17 @@ def format_training_example(pair: Dict[str, str]) -> str:
     input_text = pair.get("input", "").strip()
     output_text = pair.get("output", "").strip()
     
-    # Basit format - Qwen'e uygun
-    return f"Soru: {input_text}\nCevap: {output_text}"
+    # Qwen instruct format
+    return f"<|im_start|>user\n{input_text}<|im_end|>\n<|im_start|>assistant\n{output_text}<|im_end|>"
 
 def prepare_dataset(training_pairs: List[Dict], tokenizer, max_length: int = 512):
-    """Dataset'i hazırla ve tokenize et"""
+    """DÜZELTILMIŞ Dataset hazırlama"""
     
     # Train/validation böl
     random.shuffle(training_pairs)
     split_idx = max(1, int(len(training_pairs) * 0.85))
     train_pairs = training_pairs[:split_idx]
-    eval_pairs = training_pairs[split_idx:] if split_idx < len(training_pairs) else train_pairs[-5:]
+    eval_pairs = training_pairs[split_idx:] if split_idx < len(training_pairs) else train_pairs[-3:]
     
     # Format'la
     train_texts = [format_training_example(pair) for pair in train_pairs]
@@ -350,17 +354,19 @@ def prepare_dataset(training_pairs: List[Dict], tokenizer, max_length: int = 512
     train_dataset = hf_datasets.Dataset.from_dict({"text": train_texts})
     eval_dataset = hf_datasets.Dataset.from_dict({"text": eval_texts})
     
-    # Tokenize et
+    # Tokenize et - remove_columns doğru şekilde
     train_dataset = train_dataset.map(
         lambda examples: tokenize_function(examples, tokenizer, max_length),
         batched=True,
-        remove_columns=["text"]
+        remove_columns=train_dataset.column_names,  # Tüm orijinal sütunları kaldır
+        desc="Tokenizing train dataset"
     )
     
     eval_dataset = eval_dataset.map(
         lambda examples: tokenize_function(examples, tokenizer, max_length),
         batched=True,
-        remove_columns=["text"]
+        remove_columns=eval_dataset.column_names,  # Tüm orijinal sütunları kaldır
+        desc="Tokenizing eval dataset"
     )
     
     return train_dataset, eval_dataset
@@ -368,7 +374,7 @@ def prepare_dataset(training_pairs: List[Dict], tokenizer, max_length: int = 512
 class CustomTrainer(Trainer):
     """Özelleştirilmiş Trainer"""
     
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """Loss hesaplama"""
         labels = inputs.get("labels")
         outputs = model(**inputs)
@@ -388,13 +394,46 @@ class CustomTrainer(Trainer):
         
         return (loss, outputs) if return_outputs else loss
 
+def debug_dataset(train_dataset, eval_dataset, tokenizer):
+    """Dataset debug bilgileri"""
+    print("\n🔍 Dataset Debug Bilgileri:")
+    print("-" * 40)
+    
+    # Train dataset
+    print(f"📚 Train dataset boyutu: {len(train_dataset)}")
+    print(f"📚 Train sütunları: {train_dataset.column_names}")
+    
+    # İlk örneği incele
+    if len(train_dataset) > 0:
+        first_example = train_dataset[0]
+        print(f"📝 İlk örnek anahtarları: {list(first_example.keys())}")
+        
+        if 'input_ids' in first_example:
+            input_length = len(first_example['input_ids'])
+            print(f"📏 İlk örnek input_ids uzunluğu: {input_length}")
+            
+            # İlk birkaç token'ı decode et
+            if input_length > 0:
+                sample_text = tokenizer.decode(first_example['input_ids'][:min(50, input_length)])
+                print(f"📄 İlk 50 token örneği: {sample_text[:100]}...")
+    
+    # Eval dataset
+    print(f"📝 Eval dataset boyutu: {len(eval_dataset)}")
+    print(f"📝 Eval sütunları: {eval_dataset.column_names}")
+    
+    # Uzunluk dağılımı
+    if len(train_dataset) > 0 and 'input_ids' in train_dataset[0]:
+        lengths = [len(example['input_ids']) for example in train_dataset]
+        print(f"📊 Uzunluk istatistikleri:")
+        print(f"   Min: {min(lengths)}, Max: {max(lengths)}, Ortalama: {sum(lengths)/len(lengths):.1f}")
+
 def train_understanding_model(
     base_model: str = "Qwen/Qwen2.5-3B-Instruct",
     output_dir: str = "./qwen_understanding_model",
-    include_real_data: bool = True,
+    include_real_data: bool = False,
     max_seq_length: int = 512
 ):
-    """Ana eğitim fonksiyonu - Manuel Trainer kullanarak"""
+    """Ana eğitim fonksiyonu - DÜZELTILMIŞ"""
     
     print(f"🚀 Fine-tuning başlıyor...")
     print(f"📋 Base model: {base_model}")
@@ -411,10 +450,9 @@ def train_understanding_model(
         trust_remote_code=True
     )
     
-    # Pad token ekle
+    # Pad token ekle - QWEN için önemli
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.add_special_tokens({'pad_token': '<|endoftext|>'})
     
     # Model yükleme
     device_map = "auto" if torch.cuda.is_available() else None
@@ -428,6 +466,10 @@ def train_understanding_model(
         trust_remote_code=True,
         low_cpu_mem_usage=True
     )
+    
+    # Tokenizer resize (pad token ekledik)
+    if len(tokenizer) > model.config.vocab_size:
+        model.resize_token_embeddings(len(tokenizer))
     
     # 2. LoRA uygula
     print("🔧 LoRA konfigürasyonu uygulanıyor...")
@@ -452,21 +494,29 @@ def train_understanding_model(
     generator = ImprovedUnderstandingDataGenerator(es_client)
     training_pairs = generator.generate_comprehensive_training_data()
     
+    if len(training_pairs) < 5:
+        print("❌ Eğitim verisi yetersiz!")
+        return None
+    
     # 4. Dataset hazırla
     print("🗂️ Dataset hazırlanıyor...")
     train_dataset, eval_dataset = prepare_dataset(training_pairs, tokenizer, max_seq_length)
     
-    # 5. Data collator
+    # 5. Debug bilgileri
+    debug_dataset(train_dataset, eval_dataset, tokenizer)
+    
+    # 6. DÜZELTILMIŞ Data collator
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
         mlm=False,  # Causal LM için
-        pad_to_multiple_of=8 if torch.cuda.is_available() else None
+        pad_to_multiple_of=8 if torch.cuda.is_available() else None,
+        return_tensors="pt"
     )
     
-    # 6. Training arguments
+    # 7. Training arguments
     training_args = create_fixed_training_args(output_dir)
     
-    # 7. Trainer oluştur
+    # 8. Trainer oluştur
     print("🎯 Trainer oluşturuluyor...")
     trainer = CustomTrainer(
         model=model,
@@ -477,7 +527,7 @@ def train_understanding_model(
         tokenizer=tokenizer,
     )
     
-    # 8. Eğitimi çalıştır
+    # 9. Eğitimi çalıştır
     print("🏃‍♂️ Eğitim başlatılıyor...")
     try:
         trainer.train()
@@ -547,7 +597,8 @@ def test_trained_model(model_path: str):
         print("-" * 60)
         
         for i, question in enumerate(test_questions, 1):
-            prompt = f"Soru: {question}\nCevap:"
+            # Qwen format
+            prompt = f"<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\n"
             
             inputs = tokenizer(prompt, return_tensors="pt")
             if torch.cuda.is_available():
@@ -561,7 +612,7 @@ def test_trained_model(model_path: str):
                     do_sample=True,
                     top_p=0.9,
                     eos_token_id=tokenizer.eos_token_id,
-                    pad_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.pad_token_id,
                     repetition_penalty=1.1
                 )
             
@@ -595,67 +646,32 @@ def check_dependencies():
             missing.append(package)
     
     if missing:
-        print(f"❌ Eksik kütüphaneler: {missing}")
-        print("📦 Kurulum komutu:")
-        print(f"pip install {' '.join(missing)}")
+        print(f"❌ Eksik kütüphaneler bulundu: {', '.join(missing)}")
+        print("💡 Kurulum için:")
+        print(f"   pip install {' '.join(missing)}")
         return False
     
+    print("✅ Tüm kütüphaneler yüklü.")
     return True
 
+
 def main():
-    """Ana fonksiyon"""
-    
-    print("=" * 60)
-    print("🧠 QWEN UNDERSTANDING FOCUSED TRAINER V2")
-    print("=" * 60)
-    
-    # Dependency check
+    """Anlama (understanding) odaklı fine-tuning'i çalıştır ve testi yap"""
     if not check_dependencies():
         return
     
-    # Ortam değişkenlerinden konfigürasyon al
-    base_model = os.environ.get("BASE_MODEL", "Qwen/Qwen2.5-3B-Instruct")
-    output_dir = os.environ.get("OUTPUT_DIR", "./qwen_understanding_model")
-    include_real = os.environ.get("INCLUDE_REAL_DATA", "1") == "1"
+    # Eğitim
+    output_dir = train_understanding_model(
+        base_model="Qwen/Qwen2.5-3B-Instruct",
+        output_dir="./qwen_understanding_model",
+        include_real_data=True,
+        max_seq_length=512,
+    )
     
-    print(f"📋 Base Model: {base_model}")
-    print(f"📁 Output Dir: {output_dir}")
-    print(f"🔗 Real Data: {'Evet' if include_real else 'Hayır'}")
-    print(f"🖥️ CUDA: {'Evet' if torch.cuda.is_available() else 'Hayır'}")
-    print("=" * 60)
-    
-    try:
-        # Eğitimi çalıştır
-        start_time = datetime.now()
-        print(f"⏰ Başlangıç: {start_time.strftime('%H:%M:%S')}")
-        
-        final_model_path = train_understanding_model(
-            base_model=base_model,
-            output_dir=output_dir,
-            include_real_data=include_real,
-            max_seq_length=512
-        )
-        
-        end_time = datetime.now()
-        duration = end_time - start_time
-        print(f"⏰ Eğitim süresi: {duration}")
-        
-        # Modeli test et
-        if test_trained_model(final_model_path):
-            print(f"\n🎉 Tüm işlemler başarıyla tamamlandı!")
-            print(f"📂 Eğitilmiş model: {final_model_path}")
-            merged_path = os.path.join(final_model_path, "merged")
-            if os.path.isdir(merged_path):
-                print(f"📂 Merge edilmiş model: {merged_path}")
-                print(f"💡 Query system'de bu modeli kullanmak için:")
-                print(f"   MODEL_NAME={merged_path} python query_system.py")
-        
-    except KeyboardInterrupt:
-        print("\n⏹️ Eğitim kullanıcı tarafından durduruldu.")
-    except Exception as e:
-        print(f"\n❌ Kritik hata: {e}")
-        import traceback
-        traceback.print_exc()
+    # Test
+    if output_dir:
+        test_trained_model(output_dir)
+
 
 if __name__ == "__main__":
     main()
