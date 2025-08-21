@@ -5,7 +5,7 @@ Modern bir web tabanlı sistem izleme uygulaması. React frontend ve FastAPI bac
 ## 🚀 Özellikler
 
 - **Gerçek Zamanlı İzleme**: CPU, RAM, disk ve ağ performansını canlı olarak izler
-- **VPN Durumu**: VPN bağlantı durumunu kontrol eder
+- **VPN Durumu**: VPN bağlantı durumunu kontrol eder ve geçmiş kayıtları listeler
 - **AI Sorgu Sistemi**: Doğal dil ile sistem verileriniz hakkında sorular sorun
 - **Veri Geçmişi**: Geçmiş performans verilerini grafiklerle görüntüler
 - **Modern UI**: Renkli ve kullanıcı dostu arayüz
@@ -86,8 +86,12 @@ npm start
 
 ### 1. Backend'i Başlat
 
+Tercih edilen yol: kökten `start_app.bat` (Windows) veya doğrudan API:
+
 ```bash
 # Ana dizinde
+python start_backend.py  # Elasticsearch kontrol + API başlatma
+# veya
 cd api
 python main.py
 ```
@@ -106,45 +110,46 @@ Frontend `http://localhost:3000` adresinde çalışacak.
 
 ### 3. API Dokümantasyonu
 
-FastAPI otomatik dokümantasyonu şu adreslerde mevcuttur:
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
 ## 📊 Kullanım
 
 ### Dashboard
-- Sistem durumunu genel bakış
-- Hızlı metrikler
-- Son aktiviteler
+- Sistem genel durumu, hızlı metrikler
+- Manuel veri toplama butonu
 
 ### Sistem İzleme
-- Gerçek zamanlı CPU, RAM, disk kullanımı
-- Ağ performansı
-- VPN durumu
-- Canlı grafikler
+- Gerçek zamanlı CPU, RAM, disk, ağ
+- Ağ durumu ve bağlantılar
 
 ### Sorgu Sistemi
-- Doğal dil ile sorular sorun
-- AI destekli yanıtlar
-- Örnek sorular
+- Doğal dil ile sorular
+- Örnek: “Son 6 saatte VPN durumu?” veya “Son 2 saatte VPN kayıtlarını göster”
+- Çoklu VPN kaydı listeleri desteklenir
 
 ### Veri Geçmişi
-- Geçmiş performans verileri
-- İnteraktif grafikler
-- İstatistikler
-- Veri dışa aktarma
+- Zaman aralıklarına göre filtreleme
+- CSV olarak dışa aktarma
 
 ## 🔧 Konfigürasyon
 
-`config.py` dosyasında aşağıdaki ayarları yapabilirsiniz:
+Konfigürasyon dosyaları artık `backend/` paketinde tutulmaktadır:
 
 ```python
+# backend/config.py
 ELASTICSEARCH_CONFIG = {
     'host': 'localhost',
     'port': 9200,
     'username': None,
     'password': None,
-    'use_ssl': False
+    'use_ssl': False,
+    'verify_certs': False,
+}
+
+USER_CONFIG = {
+    'user_id': 'default_user',
+    'device_id': None,
 }
 ```
 
@@ -153,68 +158,49 @@ ELASTICSEARCH_CONFIG = {
 ```
 vpn/
 ├── api/
-│   └── main.py              # FastAPI backend
+│   └── main.py                # FastAPI uygulaması
+├── backend/                   # Backend paket (yeni)
+│   ├── __init__.py
+│   ├── config.py              # Konfigürasyon
+│   ├── data_collector.py      # Veri toplama ve ES kayıt
+│   ├── elasticsearch_client_v8.py # ES 8.x async istemcisi (sarmalayıcı)
+│   ├── query_system.py        # AI sorgu sistemi (Qwen)
+│   ├── system_monitor.py      # Sistem bilgisi toplayıcı
+│   └── web.py                 # IP, VPN, hız testi (fallback destekli)
 ├── frontend/
 │   ├── src/
-│   │   ├── components/      # React bileşenleri
-│   │   ├── App.js          # Ana uygulama
-│   │   └── index.js        # Giriş noktası
-│   ├── package.json        # Frontend bağımlılıkları
-│   └── tailwind.config.js  # Tailwind konfigürasyonu
-├── data_collector.py       # Veri toplama
-├── query_system.py         # AI sorgu sistemi
-├── system_monitor.py       # Sistem izleme
-├── config.py              # Konfigürasyon
-└── requirements.txt       # Python bağımlılıkları
+│   │   ├── components/
+│   │   ├── App.js
+│   │   └── index.js
+│   └── package.json
+├── start_backend.py           # Elasticsearch kontrol + API başlatma
+├── start_app.bat              # Windows toplu başlatıcı (Backend+Frontend)
+├── requirements.txt
+└── README.md
 ```
-
-## 🎨 Özelleştirme
-
-### Renk Teması
-`frontend/tailwind.config.js` dosyasında renk paletini özelleştirebilirsiniz:
-
-```javascript
-colors: {
-  primary: {
-    500: '#3b82f6',
-    // ...
-  }
-}
-```
-
-### API Endpoints
-`api/main.py` dosyasında yeni endpoint'ler ekleyebilirsiniz.
 
 ## 🐛 Sorun Giderme
 
 ### Elasticsearch Bağlantı Hatası
 ```bash
-# Elasticsearch durumunu kontrol et
 curl http://localhost:9200
-
 # Container'ı yeniden başlat
 docker restart elasticsearch
 ```
 
 ### Frontend Build Hatası
 ```bash
-# Node modules'u temizle ve yeniden yükle
 rm -rf node_modules package-lock.json
 npm install
 ```
 
 ### Backend Import Hatası
-```bash
-# Python path'ini kontrol et
-export PYTHONPATH="${PYTHONPATH}:/path/to/vpn"
-```
+`backend/` paketini içeren proje kökü `PYTHONPATH` içinde olmalıdır (API `main.py` bunu otomatik ekler).
 
 ## 📈 Performans
 
-- Backend: ~100ms API yanıt süresi
-- Frontend: <2s sayfa yükleme süresi
-- Veri toplama: 5 saniyede bir güncelleme
-- Grafik güncelleme: Gerçek zamanlı
+- API yanıtları düşük gecikme için optimize edildi (CPU örnekleme 0.1s)
+- Sürekli izleme aralığı ortam değişkeni ile ayarlanabilir: `COLLECTION_INTERVAL_SECONDS`
 
 ## 🔒 Güvenlik
 
@@ -234,11 +220,3 @@ export PYTHONPATH="${PYTHONPATH}:/path/to/vpn"
 ## 📄 Lisans
 
 Bu proje MIT lisansı altında lisanslanmıştır.
-
-## 📞 Destek
-
-Sorularınız için issue açabilir veya iletişime geçebilirsiniz.
-
----
-
-**Not**: Bu uygulama geliştirme amaçlıdır. Production kullanımı için ek güvenlik önlemleri alınmalıdır.
