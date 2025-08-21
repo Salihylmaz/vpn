@@ -17,7 +17,7 @@ from transformers import (
 )
 from peft import LoraConfig, TaskType, get_peft_model
 
-from elasticsearch_client_v8 import ElasticsearchClient
+from backend.elasticsearch_client_v8 import ElasticsearchClient
 
 class ImprovedUnderstandingDataGenerator:
     """Geliştirilmiş anlama odaklı veri üreticisi"""

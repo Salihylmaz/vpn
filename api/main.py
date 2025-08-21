@@ -9,12 +9,14 @@ from datetime import datetime, timedelta
 import sys
 import os
 
-# Add parent directory to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure project root on sys.path so that 'backend' package can be imported when running from api/
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
 
-from data_collector import DataCollector
-from query_system import QuerySystem
-from system_monitor import SystemMonitor
+from backend.data_collector import DataCollector
+from backend.query_system import QuerySystem
+from backend.system_monitor import SystemMonitor
 
 app = FastAPI(
     title="VPN Monitoring System API",
@@ -53,7 +55,7 @@ class MonitoringStatus(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    global data_collector, system_monitor, monitoring_active, _last_collection_at
+    global data_collector, system_monitor, monitoring_active, _last_collection_at, continuous_task
     
     try:
         # Initialize components
@@ -78,7 +80,7 @@ async def startup_event():
         
         # Start continuous monitoring
         monitoring_active = True
-        asyncio.create_task(start_continuous_monitoring())
+        continuous_task = asyncio.create_task(start_continuous_monitoring())
         
         print("✅ API başlatıldı ve Elasticsearch bağlantısı kuruldu")
         print(f"✅ Sürekli veri toplama başlatıldı (her {COLLECTION_INTERVAL_SECONDS} sn)")
@@ -201,7 +203,8 @@ async def start_monitoring():
     global monitoring_active, continuous_task
     if not monitoring_active:
         monitoring_active = True
-        continuous_task = asyncio.create_task(start_continuous_monitoring())
+        if not continuous_task or continuous_task.done() or continuous_task.cancelled():
+            continuous_task = asyncio.create_task(start_continuous_monitoring())
         return {"message": "Sürekli izleme başlatıldı"}
     else:
         return {"message": "İzleme zaten aktif"}
@@ -211,8 +214,12 @@ async def stop_monitoring():
     global monitoring_active, continuous_task
     if monitoring_active:
         monitoring_active = False
-        if continuous_task:
+        if continuous_task and not continuous_task.cancelled() and not continuous_task.done():
             continuous_task.cancel()
+            try:
+                await asyncio.sleep(0)
+            except Exception:
+                pass
         return {"message": "Sürekli izleme durduruldu"}
     else:
         return {"message": "İzleme zaten durdurulmuş"}
