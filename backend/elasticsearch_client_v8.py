@@ -242,9 +242,9 @@ class ElasticsearchClient:
 			print(f"❌ İndeks silinemedi ({index_name}): {e}")
 			return False
 	
-	def count_documents(self, index_name):
+	def count_documents_sync(self, index_name):
 		"""
-		İndeksteki toplam belge sayısını alır.
+		İndeksteki toplam belge sayısını alır (senkron).
 		
 		Args:
 			index_name (str): İndeks adı
