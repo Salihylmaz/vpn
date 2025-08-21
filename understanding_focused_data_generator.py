@@ -1,6 +1,6 @@
 # understanding_focused_data_generator.py
 import json
-from elasticsearch_client_v8 import ElasticsearchClient
+from backend.elasticsearch_client_v8 import ElasticsearchClient
 
 class UnderstandingFocusedDataGenerator:
     """Anlama odaklı eğitim verisi üreticisi"""
