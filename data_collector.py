@@ -1,6 +1,7 @@
 from datetime import datetime
 import time
 import json
+import asyncio
 from elasticsearch_client_v8 import ElasticsearchClient
 from system_monitor import SystemMonitor
 from web import WebInfo
@@ -40,7 +41,7 @@ class DataCollector:
             print(f"❌ DataCollector başlatılamadı: {e}")
             raise
     
-    def create_indices(self):
+    async def create_indices(self):
         """
         Gerekli Elasticsearch indekslerini oluşturur.
         """
@@ -181,11 +182,24 @@ class DataCollector:
             mapping["properties"]["device_id"] = {"type": "keyword"}
         
         # İndeksleri oluştur
-        self.es_client.create_index("system-monitoring", system_mapping)
-        self.es_client.create_index("web-monitoring", web_mapping)
-        self.es_client.create_index("combined-monitoring", combined_mapping)
+        await self.es_client.create_index("system-monitoring", system_mapping)
+        await self.es_client.create_index("web-monitoring", web_mapping)
+        await self.es_client.create_index("combined-monitoring", combined_mapping)
         
         print("✅ İndeksler başarıyla oluşturuldu!")
+    
+    async def check_elasticsearch_health(self):
+        """
+        Elasticsearch bağlantısını kontrol eder.
+        
+        Returns:
+            bool: Bağlantı sağlıklı mı
+        """
+        try:
+            return await self.es_client.ping()
+        except Exception as e:
+            print(f"❌ Elasticsearch sağlık kontrolü hatası: {e}")
+            return False
     
     def collect_system_data(self, include_processes=True):
         """
@@ -256,7 +270,7 @@ class DataCollector:
 
         return combined_data
     
-    def save_to_elasticsearch(self, data, index_name="combined-monitoring"):
+    async def save_to_elasticsearch(self, data, index_name="combined-monitoring"):
         """
         Verileri Elasticsearch'e kaydeder.
         
@@ -268,7 +282,7 @@ class DataCollector:
             bool: Kaydetme başarılı mı
         """
         try:
-            result = self.es_client.index_document(index_name, data)
+            result = await self.es_client.index_document(index_name, data)
             if result:
                 print(f"✅ Veriler '{index_name}' indeksine kaydedildi!")
                 return True
@@ -279,17 +293,33 @@ class DataCollector:
             print(f"❌ Elasticsearch kaydetme hatası: {e}")
             return False
     
-    def save_system_data(self, system_data):
+    async def save_system_data(self, system_data):
         """Sistem verilerini kaydeder."""
-        return self.save_to_elasticsearch(system_data, "system-monitoring")
+        return await self.save_to_elasticsearch(system_data, "system-monitoring")
     
-    def save_web_data(self, web_data):
+    async def save_web_data(self, web_data):
         """Web verilerini kaydeder."""
-        return self.save_to_elasticsearch(web_data, "web-monitoring")
+        return await self.save_to_elasticsearch(web_data, "web-monitoring")
     
-    def save_combined_data(self, combined_data):
+    async def save_combined_data(self, combined_data):
         """Birleştirilmiş verileri kaydeder."""
-        return self.save_to_elasticsearch(combined_data, "combined-monitoring")
+        return await self.save_to_elasticsearch(combined_data, "combined-monitoring")
+    
+    async def get_latest_data(self, limit=100):
+        """
+        En son toplanan verileri getirir.
+        
+        Args:
+            limit (int): Kaç kayıt getirilecek
+            
+        Returns:
+            list: Veri listesi
+        """
+        try:
+            return await self.es_client.search_documents("combined-monitoring", limit=limit)
+        except Exception as e:
+            print(f"❌ Veri getirme hatası: {e}")
+            return []
     
     def run_single_collection(self, include_processes=True, include_speed_test=True, save_separate=False):
         """

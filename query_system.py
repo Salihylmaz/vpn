@@ -312,7 +312,7 @@ class QuerySystem:
         
         return base_query
     
-    def search_data(self, intent, time_range):
+    async def search_data(self, intent, time_range):
         """
         Elasticsearch'te veri arar.
         
@@ -325,15 +325,36 @@ class QuerySystem:
         """
         try:
             query = self.build_elasticsearch_query(intent, time_range)
-            results = self.es_client.search("combined-monitoring", query.get("query"), query.get("size", 10))
+            results = await self.es_client.search_documents("combined-monitoring", query.get("query"), query.get("size", 10))
             
-            # 'search' metodu hits listesi döndürüyor; onu normalize etmiştik
-            return [hit['_source'] for hit in results]
+            return results
             
         except Exception as e:
             print(f"❌ Elasticsearch sorgu hatası: {e}")
             return []
-    
+
+    async def count_records(self, time_range):
+        """Belirli zaman aralığında toplam kayıt sayısı."""
+        try:
+            query = {
+                "bool": {
+                    "must": [
+                        {
+                            "range": {
+                                "collection_timestamp": {
+                                    "gte": time_range['start_time'],
+                                    "lte": time_range['end_time']
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+            return await self.es_client.count_documents("combined-monitoring", query)
+        except Exception as e:
+            print(f"❌ Count hatası: {e}")
+            return 0
+
     def format_response(self, intent, data, time_range):
         """
         Veriyi doğal dil yanıtına dönüştürür.
@@ -547,6 +568,64 @@ class QuerySystem:
         except Exception as e:
             print(f"❌ Qwen yanıt üretme hatası: {e}")
             return "Yanıt üretemedim, teknik bir sorun oluştu."
+    
+    async def query(self, user_query):
+        """
+        Kullanıcı sorgusunu işler ve yanıt döner.
+        
+        Args:
+            user_query (str): Kullanıcı sorgusu
+            
+        Returns:
+            str: Doğal dil yanıtı
+        """
+        print(f"\n🔍 Sorgu işleniyor: '{user_query}'")
+        
+        try:
+            # 1. Zaman bilgisini çıkar
+            time_range = self.parse_time_query(user_query)
+            print(f"⏰ Zaman aralığı: {time_range['start_time']} - {time_range['end_time']}")
+            
+            # Özel: 'kaç kayıt' gibi sayım soruları
+            if re.search(r"(kaç|kac).*kayıt|kac.*record|how many", user_query.lower()):
+                total = await self.count_records(time_range)
+                return f"Seçilen zaman aralığında toplam {total} kayıt var."
+            
+            # 2. Sorgu amacını belirle
+            intent = self.parse_query_intent(user_query)
+            print(f"🎯 Tespit edilen amaç: {intent['intent']} (güven: {intent['confidence']})")
+            
+            # 3. Elasticsearch'te veri ara
+            print("📊 Veriler sorgulanıyor...")
+            data = await self.search_data(intent, time_range)
+            print(f"📋 {len(data)} kayıt bulundu")
+            
+            # 4. Yanıtı formatla
+            structured_response = self.format_response(intent, data, time_range)
+            
+            # 5. Yanıt üretimi
+            deterministic_intents = {
+                'vpn_status', 'speed_info', 'system_info', 'location_info',
+                'device_listing', 'time_analysis', 'data_coverage'
+            }
+            if intent['intent'] in deterministic_intents:
+                natural_response = structured_response
+            else:
+                context = (
+                    f"Soru: {user_query}\n"
+                    f"Amaç: {intent['intent']}\n"
+                    f"Zaman: {time_range['start_time']} - {time_range['end_time']}\n"
+                    f"Bulunan: {structured_response}\n"
+                    f"Kısa, net bir yanıt ver:"
+                )
+                natural_response = self.generate_response_with_qwen(context)
+            
+            print(f"✅ Sorgu işlendi!")
+            return natural_response
+            
+        except Exception as e:
+            print(f"❌ Sorgu işleme hatası: {e}")
+            return f"Sorgu işlenirken hata oluştu: {str(e)}"
     
     def process_query(self, user_query):
         """

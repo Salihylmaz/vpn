@@ -4,6 +4,14 @@ venv/
 ENV/
 env/
 
+# Node.js
+node_modules/
+dist/
+build/
+
+# VSCode
+.vscode/
+
 # Python cache dosyaları
 __pycache__/
 *.pyc
