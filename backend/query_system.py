@@ -350,7 +350,9 @@ class QuerySystem:
 					]
 				}
 			}
-			return await self.es_client.count_documents("combined-monitoring", query)
+			# Async count_documents metodunu çağır
+			result = await self.es_client.count_documents("combined-monitoring", query)
+			return result
 		except Exception as e:
 			print(f"❌ Count hatası: {e}")
 			return 0
@@ -370,18 +372,29 @@ class QuerySystem:
 		if not data:
 			return self.response_templates["not_found"]
 		
-		latest_data = data[0]  # En son veri
-		
 		try:
 			if intent['intent'] == 'vpn_status':
-				vpn_info = latest_data.get('web_data', {}).get('vpn_detection', {})
-				if vpn_info:
-					return self.response_templates["vpn_status"].format(
-						status=vpn_info.get('status', 'bilinmiyor'),
-						message=vpn_info.get('message', 'Detay yok.')
-					)
+				# VPN durumu için daha okunaklı format
+				vpn_records = []
+				for item in data:
+					vpn_info = item.get('web_data', {}).get('vpn_detection', {})
+					if vpn_info:
+						timestamp = item.get('collection_timestamp', 'Bilinmiyor')[:16]  # YYYY-MM-DD HH:MM
+						status = vpn_info.get('status', 'bilinmiyor')
+						message = vpn_info.get('message', 'Detay yok')
+						vpn_records.append(f"🕐 {timestamp} → {status} ({message})")
+				
+				if vpn_records:
+					records_text = "\n".join(vpn_records[:10])  # Son 10 kayıt
+					summary = f"\n\n📊 Toplam {len(vpn_records)} kayıt bulundu"
+					if len(vpn_records) > 10:
+						summary += f" (son 10 tanesi gösteriliyor)"
+					return f"VPN Durum Geçmişi:\n\n{records_text}{summary}"
+				else:
+					return "VPN durum bilgisi bulunamadı."
 			
 			elif intent['intent'] == 'speed_info':
+				latest_data = data[0]  # En son veri
 				speed_info = latest_data.get('web_data', {}).get('speed_test', {})
 				if speed_info:
 					return self.response_templates["speed_info"].format(
@@ -391,6 +404,7 @@ class QuerySystem:
 					)
 			
 			elif intent['intent'] == 'system_info':
+				latest_data = data[0]  # En son veri
 				system_data = latest_data.get('system_data', {})
 				cpu = system_data.get('cpu', {}).get('cpu_percent', 'N/A')
 				memory = system_data.get('memory', {}).get('virtual_memory', {}).get('percent', 'N/A')
@@ -401,6 +415,7 @@ class QuerySystem:
 				)
 			
 			elif intent['intent'] == 'location_info':
+				latest_data = data[0]  # En son veri
 				ip_info = latest_data.get('web_data', {}).get('ip_info', {})
 				if ip_info:
 					return self.response_templates["location_info"].format(
@@ -627,7 +642,7 @@ class QuerySystem:
 			print(f"❌ Sorgu işleme hatası: {e}")
 			return f"Sorgu işlenirken hata oluştu: {str(e)}"
 	
-	def process_query(self, user_query):
+	async def process_query(self, user_query):
 		"""
 		Kullanıcı sorgusunu işler ve yanıt döner.
 		
@@ -643,13 +658,27 @@ class QuerySystem:
 		time_range = self.parse_time_query(user_query)
 		print(f"⏰ Zaman aralığı: {time_range['start_time']} - {time_range['end_time']}")
 		
+		# Özel: 'kaç kayıt' gibi sayım soruları
+		if re.search(r"(kaç|kac).*kayıt|kac.*record|how many", user_query.lower()):
+			total = await self.count_records(time_range)
+			response_text = f"📊 Seçilen zaman aralığında toplam {total} kayıt var."
+			return {
+				"query": user_query,
+				"intent": {"intent": "count_records", "confidence": 1.0},
+				"time_range": time_range,
+				"data_found": total,
+				"structured_response": response_text,
+				"natural_response": response_text,
+				"timestamp": datetime.now().isoformat()
+			}
+		
 		# 2. Sorgu amacını belirle
 		intent = self.parse_query_intent(user_query)
 		print(f"🎯 Tespit edilen amaç: {intent['intent']} (güven: {intent['confidence']})")
 		
 		# 3. Elasticsearch'te veri ara
 		print("📊 Veriler sorgulanıyor...")
-		data = self.search_data(intent, time_range)
+		data = await self.search_data(intent, time_range)
 		print(f"📋 {len(data)} kayıt bulundu")
 		
 		# 4. Yanıtı formatla
@@ -718,8 +747,9 @@ class QuerySystem:
 					print("⚠️ Lütfen bir soru sorun.")
 					continue
 				
-				# Sorguyu işle
-				result = self.process_query(user_input)
+				# Sorguyu işle (async)
+				import asyncio
+				result = asyncio.run(self.process_query(user_input))
 				
 				# Sonucu göster
 				print(f"\n🤖 Yanıt: {result['natural_response']}")
