@@ -1,26 +1,26 @@
-# Temel sistem izleme
-psutil>=5.9.0
+# Core dependencies
+torch>=2.0.0
+transformers>=4.30.0
+datasets>=2.12.0
+peft>=0.4.0
+accelerate>=0.20.0
 
 # Elasticsearch
 elasticsearch>=8.0.0
 
-# Web işlemleri
-requests>=2.28.0
+# System monitoring
+psutil>=5.9.0
 speedtest-cli>=2.1.3
 
-# AI/ML modelleri
-torch>=2.1.0
-transformers>=4.35.0
-sentencepiece>=0.1.99
-protobuf>=3.20.3,<5.0.0
-peft>=0.11.1
-datasets>=2.19.0
-trl>=0.9.4
-accelerate>=0.33.0
+# Web framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+python-multipart>=0.0.6
 
-# Yardımcı kütüphaneler
-python-dateutil>=2.8.2
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
 
-# Opsiyonel: Gelişmiş özellikler için
-# numpy>=1.24.0  # Transformers için gerekli olabilir
-# scipy>=1.10.0  # Bazı hesaplamalar için
+# Utilities
+python-dotenv>=1.0.0
+requests>=2.31.0

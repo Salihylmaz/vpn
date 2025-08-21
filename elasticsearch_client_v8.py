@@ -1,8 +1,9 @@
-from elasticsearch import Elasticsearch
+from elasticsearch import AsyncElasticsearch
 from datetime import datetime
 import time
 import warnings
 import json
+import asyncio
 
 # SSL sertifika uyarılarını devre dışı bırak.
 # Geliştirme ortamları için kullanışlıdır ancak üretimde sertifikaları doğrulamak önemlidir.
@@ -33,40 +34,28 @@ class ElasticsearchClient:
             # Client'ı en temel parametrelerle başlatıyoruz
             # Hata mesajındaki versiyon uyumsuzluğunu gidermek için headers parametresi eklendi.
             # `compatible-with=8` ile client'ın 8.x sunucusuyla uyumlu bir şekilde iletişim kurmasını sağlıyoruz.
-            self.es = Elasticsearch(
+            self.es = AsyncElasticsearch(
                 hosts=hosts,
                 basic_auth=http_auth,
                 headers={'accept': 'application/vnd.elasticsearch+json; compatible-with=8'},
                 request_timeout=30
             )
             
-            # Bağlantıyı manuel olarak test et
-            if not self._test_connection():
-                raise ConnectionError("Elasticsearch bağlantısı başarısız oldu!")
+            print("✅ Elasticsearch istemcisi oluşturuldu!")
             
-            print("✅ Elasticsearch'e başarıyla bağlanıldı!")
-            
-        except ConnectionError as e:
-            print(f"❌ Elasticsearch bağlantısı başarısız: {e}")
-            self._print_troubleshooting_tips()
-            raise
         except Exception as e:
             print(f"❌ Elasticsearch istemci oluşturulamadı: {e}")
             raise
     
-    def _test_connection(self):
+    async def ping(self):
         """Elasticsearch bağlantısını ping ile test eder."""
-        for attempt in range(self.max_retries):
-            try:
-                info = self.es.info()
-                print(f"✅ Bağlantı başarılı: Cluster '{info['cluster_name']}' Version '{info['version']['number']}'")
-                return True
-            except Exception as e:
-                print(f"❌ Bağlantı testi başarısız (deneme {attempt + 1}/{self.max_retries}): {e}")
-                if attempt < self.max_retries - 1:
-                    print(f"{self.retry_delay} saniye bekleniyor...")
-                    time.sleep(self.retry_delay)
-        return False
+        try:
+            info = await self.es.info()
+            print(f"✅ Bağlantı başarılı: Cluster '{info['cluster_name']}' Version '{info['version']['number']}'")
+            return True
+        except Exception as e:
+            print(f"❌ Bağlantı testi başarısız: {e}")
+            return False
 
     def _print_troubleshooting_tips(self):
         """Bağlantı sorunları için ipuçları yazdırır."""
@@ -78,63 +67,72 @@ class ElasticsearchClient:
         print("   `pip install elasticsearch`")
         print("4. Python ortamınızda SSL/TLS ile ilgili bir sorun olabilir.")
 
-    def create_index(self, index_name, mapping=None):
+    async def create_index(self, index_name, mapping=None):
         """Index oluşturur (Elasticsearch 8.x uyumlu)."""
         try:
-            if not self.es.indices.exists(index=index_name):
-                self.es.indices.create(index=index_name, mappings=mapping if mapping else None)
+            exists = await self.es.indices.exists(index=index_name)
+            if not exists:
+                await self.es.indices.create(index=index_name, mappings=mapping if mapping else None)
                 print(f"Index '{index_name}' oluşturuldu.")
             else:
                 print(f"Index '{index_name}' zaten mevcut.")
         except Exception as e:
             print(f"Index oluşturma hatası: {e}")
     
-    def index_document(self, index_name, document, doc_id=None):
+    async def index_document(self, index_name, document, doc_id=None):
         """Belge index'ler (Elasticsearch 8.x uyumlu)."""
         try:
             document['timestamp'] = datetime.now().isoformat()
-            response = self.es.index(
+            response = await self.es.index(
                 index=index_name,
                 document=document,
                 id=doc_id
             )
-            print(f"Belge index'lendi: {response['_id']}")
-            return response
+            
+            if response['result'] in ['created', 'updated']:
+                print(f"✅ Belge başarıyla index'lendi: {response['_id']}")
+                return True
+            else:
+                print(f"❌ Belge index'lenemedi: {response}")
+                return False
+                
         except Exception as e:
-            print(f"Index'leme hatası: {e}")
-            return None
+            print(f"❌ Belge index'leme hatası: {e}")
+            return False
     
-    def bulk_index(self, index_name, documents):
-        """Toplu belge index'leme (Elasticsearch 8.x uyumlu)."""
-        from elasticsearch.helpers import bulk
-        
-        actions = [
-            {
-                "_index": index_name,
-                "_source": {**doc, "timestamp": datetime.now().isoformat()}
-            }
-            for doc in documents
-        ]
-        
+    async def search_documents(self, index_name, query=None, limit=10):
+        """Belgeleri arar (Elasticsearch 8.x uyumlu)."""
         try:
-            success, failed = bulk(self.es, actions)
-            print(f"Toplu index'leme: {success} başarılı, {len(failed)} başarısız")
-            return success, failed
+            if query is None:
+                query = {"match_all": {}}
+            
+            response = await self.es.search(
+                index=index_name,
+                query=query,
+                size=limit,
+                sort=[{"timestamp": {"order": "desc"}}]
+            )
+            
+            hits = response['hits']['hits']
+            documents = [hit['_source'] for hit in hits]
+            
+            print(f"✅ {len(documents)} belge bulundu.")
+            return documents
+            
         except Exception as e:
-            print(f"Toplu index'leme hatası: {e}")
-            return 0, []
-    
-    def search(self, index_name, query=None, size=10):
-        """Index'te arama yapar (Elasticsearch 8.x uyumlu)."""
-        try:
-            search_body = {"query": query if query else {"match_all": {}}}
-            # Uyarıyı gidermek için 'size' parametresi 'body' içine eklendi.
-            search_body["size"] = size
-            response = self.es.search(index=index_name, query=search_body["query"], size=size)
-            return response['hits']['hits']
-        except Exception as e:
-            print(f"Arama hatası: {e}")
+            print(f"❌ Arama hatası: {e}")
             return []
+
+    async def count_documents(self, index_name, query=None):
+        """Sorgu ile eşleşen belge sayısını döndürür."""
+        try:
+            if query is None:
+                query = {"match_all": {}}
+            response = await self.es.count(index=index_name, query=query)
+            return int(response.get('count', 0))
+        except Exception as e:
+            print(f"❌ Sayım (count) hatası: {e}")
+            return 0
     
     def get_cluster_health(self):
         """
