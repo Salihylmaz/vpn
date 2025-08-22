@@ -1,17 +1,54 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Send, 
   Bot, 
   User, 
-  Loader2
+  Loader2,
+  Power,
+  CheckCircle
 } from 'lucide-react';
-import { apiPost } from '../lib/apiClient';
+import { apiPost, apiGet } from '../lib/apiClient';
 
 const QueryInterface = () => {
   const [question, setQuestion] = useState('');
   const [conversation, setConversation] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [modelStatus, setModelStatus] = useState({ initialized: false, status: 'not_initialized' });
+  const [initializingModel, setInitializingModel] = useState(false);
+
+  useEffect(() => {
+    checkModelStatus();
+  }, []);
+
+  const checkModelStatus = async () => {
+    try {
+      const status = await apiGet('/api/model-status');
+      setModelStatus(status);
+    } catch (error) {
+      console.error('Model durum kontrolü hatası:', error);
+    }
+  };
+
+  const initializeModel = async () => {
+    try {
+      setInitializingModel(true);
+      const response = await apiPost('/api/init-model', {});
+      await checkModelStatus();
+      setConversation(prev => [...prev, { 
+        role: 'assistant', 
+        content: response.message || 'Model başarıyla başlatıldı!' 
+      }]);
+    } catch (error) {
+      console.error('Model başlatma hatası:', error);
+      setConversation(prev => [...prev, { 
+        role: 'assistant', 
+        content: 'Model başlatılamadı. Lütfen tekrar deneyin.' 
+      }]);
+    } finally {
+      setInitializingModel(false);
+    }
+  };
 
   const exampleQuestions = [
     'CPU kullanımı nasıl?',
@@ -55,13 +92,53 @@ const QueryInterface = () => {
           <h1 className="text-3xl font-bold text-white mb-2">Sorgu Sistemi</h1>
           <p className="text-white/60">Gerçek veriler ile doğal dilde sorgulama yapın</p>
         </div>
+        <div className="flex items-center space-x-4">
+          <div className={`flex items-center space-x-2 px-3 py-2 rounded-lg ${
+            modelStatus.initialized ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+          }`}>
+            {modelStatus.initialized ? (
+              <CheckCircle className="w-4 h-4" />
+            ) : (
+              <Power className="w-4 h-4" />
+            )}
+            <span className="text-sm">
+              {modelStatus.initialized ? 'Model Hazır' : 'Model Kapalı'}
+            </span>
+          </div>
+          {!modelStatus.initialized && (
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={initializeModel}
+              disabled={initializingModel}
+              className="btn-primary flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {initializingModel ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Başlatılıyor...</span>
+                </>
+              ) : (
+                <>
+                  <Power className="w-4 h-4" />
+                  <span>Modeli Başlat</span>
+                </>
+              )}
+            </motion.button>
+          )}
+        </div>
       </motion.div>
 
       {/* Quick examples */}
       <div className="card p-4">
         <div className="flex flex-wrap gap-2">
           {exampleQuestions.map((ex, idx) => (
-            <button key={idx} onClick={() => ask(ex)} className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-sm">
+            <button 
+              key={idx} 
+              onClick={() => ask(ex)} 
+              disabled={!modelStatus.initialized}
+              className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               {ex}
             </button>
           ))}
@@ -93,10 +170,15 @@ const QueryInterface = () => {
         <input
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          placeholder="Bir soru yazın..."
-          className="flex-1 px-4 py-3 rounded-lg bg-white/10 text-white outline-none"
+          placeholder={modelStatus.initialized ? "Bir soru yazın..." : "Önce modeli başlatın..."}
+          disabled={!modelStatus.initialized}
+          className="flex-1 px-4 py-3 rounded-lg bg-white/10 text-white outline-none disabled:opacity-50 disabled:cursor-not-allowed"
         />
-        <button type="submit" className="btn-primary flex items-center space-x-2">
+        <button 
+          type="submit" 
+          disabled={!modelStatus.initialized}
+          className="btn-primary flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           <Send className="w-4 h-4" /> <span>Gönder</span>
         </button>
       </form>
