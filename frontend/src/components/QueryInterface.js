@@ -82,7 +82,7 @@ const QueryInterface = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="h-full flex flex-col space-y-6">
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -145,8 +145,8 @@ const QueryInterface = () => {
         </div>
       </div>
 
-      {/* Conversation */}
-      <div className="card p-4 space-y-3" style={{ maxHeight: 600, height: 500, overflowY: 'auto' }}>
+      {/* Conversation - flexible height */}
+      <div className="card p-4 space-y-3 flex-1 overflow-y-auto">
         <AnimatePresence>
           {conversation.map((msg, idx) => (
             <motion.div key={idx} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className={`flex items-start space-x-3 ${msg.role === 'assistant' ? '' : 'justify-end'}`}>
@@ -165,7 +165,7 @@ const QueryInterface = () => {
         )}
       </div>
 
-      {/* Input */}
+      {/* Input - fixed at bottom */}
       <form onSubmit={handleSubmit} className="flex space-x-2">
         <input
           value={question}
