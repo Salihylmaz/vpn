@@ -41,8 +41,8 @@ monitoring_active = False
 continuous_task = None
 _last_collection_at = None
 
-# Configurable interval (seconds). Default 15s for faster feedback
-COLLECTION_INTERVAL_SECONDS = int(os.getenv("COLLECTION_INTERVAL_SECONDS", "15"))
+# Configurable interval (seconds). Default 120s for 2 minutes
+COLLECTION_INTERVAL_SECONDS = int(os.getenv("COLLECTION_INTERVAL_SECONDS", "120"))
 
 # Pydantic models
 class QueryRequest(BaseModel):
@@ -78,12 +78,12 @@ async def startup_event():
         except Exception as e:
             print(f"⚠️ İlk veri toplama hatası: {e}")
         
-        # Start continuous monitoring
-        monitoring_active = True
-        continuous_task = asyncio.create_task(start_continuous_monitoring())
+        # Do NOT start continuous monitoring automatically
+        monitoring_active = False
+        continuous_task = None
         
         print("✅ API başlatıldı ve Elasticsearch bağlantısı kuruldu")
-        print(f"✅ Sürekli veri toplama başlatıldı (her {COLLECTION_INTERVAL_SECONDS} sn)")
+        print(f"ℹ️ Otomatik veri toplama kapalı - Manuel başlatma gerekli (aralık: {COLLECTION_INTERVAL_SECONDS} sn)")
         
     except Exception as e:
         print(f"❌ Başlatma hatası: {e}")
@@ -168,12 +168,32 @@ async def collect_data_task():
     except Exception as e:
         print(f"❌ Manuel veri toplama hatası: {e}")
 
+@app.post("/api/init-model")
+async def init_model():
+    global query_system
+    try:
+        if query_system is None:
+            query_system = QuerySystem()
+            return {"message": "Model başarıyla başlatıldı", "status": "initialized"}
+        else:
+            return {"message": "Model zaten başlatılmış", "status": "already_initialized"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model başlatma hatası: {str(e)}")
+
+@app.get("/api/model-status")
+async def get_model_status():
+    global query_system
+    return {
+        "initialized": query_system is not None,
+        "status": "ready" if query_system is not None else "not_initialized"
+    }
+
 @app.post("/api/query")
 async def query_system_endpoint(request: QueryRequest):
     global query_system
     try:
         if query_system is None:
-            query_system = QuerySystem()
+            raise HTTPException(status_code=400, detail="Model henüz başlatılmamış. Lütfen önce modeli başlatın.")
         response = await query_system.query(request.question)
         return {"response": response}
     except Exception as e:

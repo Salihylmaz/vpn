@@ -58,6 +58,28 @@ const Dashboard = () => {
     }
   };
 
+  const handleStartMonitoring = async () => {
+    try {
+      await apiPost('/api/start-monitoring', {});
+      alert('✅ Sürekli izleme başlatıldı');
+      await fetchDashboardData();
+    } catch (error) {
+      console.error('İzleme başlatma hatası:', error);
+      alert('❌ İzleme başlatma sırasında hata oluştu');
+    }
+  };
+
+  const handleStopMonitoring = async () => {
+    try {
+      await apiPost('/api/stop-monitoring', {});
+      alert('✅ Sürekli izleme durduruldu');
+      await fetchDashboardData();
+    } catch (error) {
+      console.error('İzleme durdurma hatası:', error);
+      alert('❌ İzleme durdurma sırasında hata oluştu');
+    }
+  };
+
   const handleQuickAction = (action) => {
     switch (action) {
       case 'collect':
@@ -156,15 +178,29 @@ const Dashboard = () => {
               <div>
                 <h3 className="text-white font-semibold">Sürekli İzleme</h3>
                 <p className="text-white/60 text-sm">
-                  {monitoringStatus.active ? 'Aktif - 1 dakikada bir veri toplanıyor' : 'Pasif'}
+                  {monitoringStatus.active ? 'Aktif - 2 dakikada bir veri toplanıyor' : 'Pasif'}
                 </p>
               </div>
             </div>
-            <div className="text-right">
-              <p className="text-white/60 text-sm">Son toplama</p>
-              <p className="text-white font-medium">{monitoringStatus.last_collection || '-'}</p>
-              <p className="text-white/60 text-sm">Sonraki toplama</p>
-              <p className="text-white font-medium">{monitoringStatus.next_collection || '-'}</p>
+            <div className="flex items-center space-x-3">
+              <div className="text-right">
+                <p className="text-white/60 text-sm">Son toplama</p>
+                <p className="text-white font-medium">{monitoringStatus.last_collection || '-'}</p>
+                <p className="text-white/60 text-sm">Sonraki toplama</p>
+                <p className="text-white font-medium">{monitoringStatus.next_collection || '-'}</p>
+              </div>
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={monitoringStatus.active ? handleStopMonitoring : handleStartMonitoring}
+                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  monitoringStatus.active 
+                    ? 'bg-red-500 hover:bg-red-600 text-white' 
+                    : 'bg-green-500 hover:bg-green-600 text-white'
+                }`}
+              >
+                {monitoringStatus.active ? 'Durdur' : 'Başlat'}
+              </motion.button>
             </div>
           </div>
         </motion.div>

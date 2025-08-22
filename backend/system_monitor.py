@@ -22,8 +22,11 @@ class SystemMonitor:
 			dict: CPU bilgileri
 		"""
 		try:
+			# İlk çağrıda baseline oluştur, sonra daha uzun interval kullan
+			cpu_percent = psutil.cpu_percent(interval=1.0)  # 1 saniye interval ile daha stabil ölçüm
+			
 			cpu_info = {
-				"cpu_percent": round(psutil.cpu_percent(interval=0.1), 2),
+				"cpu_percent": round(cpu_percent, 2),
 				"cpu_count_logical": psutil.cpu_count(logical=True),
 				"cpu_count_physical": psutil.cpu_count(logical=False),
 				"cpu_freq": None,
