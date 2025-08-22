@@ -6,7 +6,8 @@ import {
   Monitor, 
   MessageSquare, 
   History,
-  Shield
+  Shield,
+  Server
 } from 'lucide-react';
 
 const Navigation = () => {
@@ -22,6 +23,12 @@ const Navigation = () => {
       name: 'Sistem İzleme',
       icon: Monitor,
       color: 'from-green-500 to-emerald-500'
+    },
+    {
+      path: '/servers',
+      name: 'Sunucular',
+      icon: Server,
+      color: 'from-indigo-500 to-purple-500'
     },
     {
       path: '/query',

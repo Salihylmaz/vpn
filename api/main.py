@@ -53,6 +53,22 @@ class MonitoringStatus(BaseModel):
     last_collection: str | None = None
     next_collection: str | None = None
 
+class ServerConfig(BaseModel):
+    name: str
+    ip: str
+    description: str = ""
+    port: int = 22
+    username: str = ""
+    password: str = ""
+
+class ServerUpdate(BaseModel):
+    name: str = None
+    ip: str = None
+    description: str = None
+    port: int = None
+    username: str = None
+    password: str = None
+
 @app.on_event("startup")
 async def startup_event():
     global data_collector, system_monitor, monitoring_active, _last_collection_at, continuous_task
@@ -64,6 +80,7 @@ async def startup_event():
         
         # Create Elasticsearch indices
         await data_collector.create_indices()
+        await create_server_indices()
 
         # Immediate initial collection for fast UI
         try:
@@ -87,6 +104,69 @@ async def startup_event():
         
     except Exception as e:
         print(f"❌ Başlatma hatası: {e}")
+
+async def create_server_indices():
+    """Create server-related Elasticsearch indices"""
+    try:
+        # Server configurations index
+        server_mapping = {
+            "properties": {
+                "id": {"type": "keyword"},
+                "name": {"type": "text"},
+                "ip": {"type": "ip"},
+                "description": {"type": "text"},
+                "port": {"type": "integer"},
+                "username": {"type": "keyword"},
+                "password": {"type": "keyword"},
+                "status": {"type": "keyword"},
+                "created_at": {"type": "date"},
+                "updated_at": {"type": "date"},
+                "last_seen": {"type": "date"}
+            }
+        }
+        
+        await data_collector.es_client.create_index("servers-config", server_mapping)
+        print("✅ Server indices created")
+        
+        # Add default localhost server if not exists
+        await ensure_default_server()
+        
+    except Exception as e:
+        print(f"⚠️ Server indices creation warning: {e}")
+
+async def ensure_default_server():
+    """Ensure default localhost server exists"""
+    try:
+        # Check if localhost server exists
+        query = {
+            "query": {
+                "term": {"ip": "127.0.0.1"}
+            }
+        }
+        
+        result = await data_collector.es_client.search_documents("servers-config", query=query, limit=1)
+        
+        if not result:
+            # Create default localhost server
+            default_server = {
+                "id": "localhost",
+                "name": "Yerel Bilgisayar",
+                "ip": "127.0.0.1",
+                "description": "Bu bilgisayar",
+                "port": 22,
+                "username": "",
+                "password": "",
+                "status": "active",
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+                "last_seen": datetime.now().isoformat()
+            }
+            
+            await data_collector.es_client.index_document("servers-config", default_server)
+            print("✅ Default localhost server created")
+            
+    except Exception as e:
+        print(f"⚠️ Default server creation warning: {e}")
 
 async def start_continuous_monitoring():
     """Sürekli veri toplama: sistem + web + birleşik"""
@@ -243,6 +323,153 @@ async def stop_monitoring():
         return {"message": "Sürekli izleme durduruldu"}
     else:
         return {"message": "İzleme zaten durdurulmuş"}
+
+# Server Management Endpoints
+@app.get("/api/servers")
+async def get_servers():
+    """Get all configured servers"""
+    try:
+        servers = await data_collector.es_client.search_documents("servers-config", limit=100)
+        return {"servers": servers}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Server listesi alınamadı: {str(e)}")
+
+@app.post("/api/servers")
+async def create_server(server: ServerConfig):
+    """Create a new server configuration"""
+    try:
+        server_data = {
+            "id": f"server_{int(datetime.now().timestamp())}",
+            "name": server.name,
+            "ip": server.ip,
+            "description": server.description,
+            "port": server.port,
+            "username": server.username,
+            "password": server.password,
+            "status": "unknown",
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+            "last_seen": None
+        }
+        
+        result = await data_collector.es_client.index_document("servers-config", server_data)
+        if result:
+            return {"message": "Server başarıyla eklendi", "server": server_data}
+        else:
+            raise HTTPException(status_code=500, detail="Server kaydedilemedi")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Server ekleme hatası: {str(e)}")
+
+@app.put("/api/servers/{server_id}")
+async def update_server(server_id: str, server: ServerUpdate):
+    """Update server configuration"""
+    try:
+        # Get existing server
+        query = {"query": {"term": {"id": server_id}}}
+        existing = await data_collector.es_client.search_documents("servers-config", query=query, limit=1)
+        
+        if not existing:
+            raise HTTPException(status_code=404, detail="Server bulunamadı")
+        
+        # Update fields
+        server_data = existing[0]
+        update_data = server.dict(exclude_unset=True)
+        server_data.update(update_data)
+        server_data["updated_at"] = datetime.now().isoformat()
+        
+        result = await data_collector.es_client.index_document("servers-config", server_data)
+        if result:
+            return {"message": "Server başarıyla güncellendi", "server": server_data}
+        else:
+            raise HTTPException(status_code=500, detail="Server güncellenemedi")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Server güncelleme hatası: {str(e)}")
+
+@app.delete("/api/servers/{server_id}")
+async def delete_server(server_id: str):
+    """Delete server configuration"""
+    try:
+        if server_id == "localhost":
+            raise HTTPException(status_code=400, detail="Localhost server silinemez")
+        
+        # Delete server document
+        query = {"query": {"term": {"id": server_id}}}
+        result = await data_collector.es_client.delete_by_query("servers-config", query)
+        
+        return {"message": "Server başarıyla silindi"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Server silme hatası: {str(e)}")
+
+@app.post("/api/servers/{server_id}/collect")
+async def collect_server_data(server_id: str, background_tasks: BackgroundTasks):
+    """Collect data for specific server"""
+    try:
+        # Get server config
+        query = {"query": {"term": {"id": server_id}}}
+        servers = await data_collector.es_client.search_documents("servers-config", query=query, limit=1)
+        
+        if not servers:
+            raise HTTPException(status_code=404, detail="Server bulunamadı")
+        
+        server = servers[0]
+        background_tasks.add_task(collect_server_data_task, server)
+        
+        return {"message": f"{server['name']} için veri toplama başlatıldı"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Veri toplama hatası: {str(e)}")
+
+async def collect_server_data_task(server_config):
+    """Background task to collect data for specific server"""
+    try:
+        server_id = server_config["id"]
+        
+        # Always collect local data regardless of server IP
+        # This allows collecting local computer data for any configured server
+        system_data = system_monitor.get_complete_system_info(include_processes=True)
+        web_data = data_collector.collect_web_data(include_speed_test=True)
+        
+        # Add server info to data
+        system_data["server_id"] = server_id
+        system_data["server_name"] = server_config["name"]
+        web_data["server_id"] = server_id
+        web_data["server_name"] = server_config["name"]
+        
+        combined_data = {
+            "collection_timestamp": datetime.now().isoformat(),
+            "server_id": server_id,
+            "server_name": server_config["name"],
+            "server_ip": server_config["ip"],
+            "system_data": system_data,
+            "web_data": web_data
+        }
+        
+        # Save to server-specific index
+        index_name = f"server-{server_id}-monitoring"
+        await data_collector.es_client.index_document(index_name, combined_data)
+        
+        # Update server last_seen
+        server_config["last_seen"] = datetime.now().isoformat()
+        server_config["status"] = "active"
+        await data_collector.es_client.index_document("servers-config", server_config)
+        
+        print(f"✅ {server_config['name']} için veri toplandı (yerel bilgisayardan)")
+            
+    except Exception as e:
+        print(f"❌ Server data collection error: {e}")
+
+@app.get("/api/servers/{server_id}/data")
+async def get_server_data(server_id: str, limit: int = 100):
+    """Get latest data for specific server"""
+    try:
+        index_name = f"server-{server_id}-monitoring"
+        data = await data_collector.es_client.search_documents(index_name, limit=limit)
+        return {"data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Server verisi alınamadı: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
