@@ -427,38 +427,36 @@ async def collect_server_data_task(server_config):
     try:
         server_id = server_config["id"]
         
-        if server_config["ip"] in ["127.0.0.1", "localhost"]:
-            # Local data collection
-            system_data = system_monitor.get_complete_system_info(include_processes=True)
-            web_data = data_collector.collect_web_data(include_speed_test=True)
-            
-            # Add server info to data
-            system_data["server_id"] = server_id
-            system_data["server_name"] = server_config["name"]
-            web_data["server_id"] = server_id
-            web_data["server_name"] = server_config["name"]
-            
-            combined_data = {
-                "collection_timestamp": datetime.now().isoformat(),
-                "server_id": server_id,
-                "server_name": server_config["name"],
-                "system_data": system_data,
-                "web_data": web_data
-            }
-            
-            # Save to server-specific index
-            index_name = f"server-{server_id}-monitoring"
-            await data_collector.es_client.index_document(index_name, combined_data)
-            
-            # Update server last_seen
-            server_config["last_seen"] = datetime.now().isoformat()
-            server_config["status"] = "active"
-            await data_collector.es_client.index_document("servers-config", server_config)
-            
-            print(f"✅ {server_config['name']} için veri toplandı")
-        else:
-            # Remote server data collection (placeholder for future implementation)
-            print(f"⚠️ Remote server data collection not implemented yet: {server_config['name']}")
+        # Always collect local data regardless of server IP
+        # This allows collecting local computer data for any configured server
+        system_data = system_monitor.get_complete_system_info(include_processes=True)
+        web_data = data_collector.collect_web_data(include_speed_test=True)
+        
+        # Add server info to data
+        system_data["server_id"] = server_id
+        system_data["server_name"] = server_config["name"]
+        web_data["server_id"] = server_id
+        web_data["server_name"] = server_config["name"]
+        
+        combined_data = {
+            "collection_timestamp": datetime.now().isoformat(),
+            "server_id": server_id,
+            "server_name": server_config["name"],
+            "server_ip": server_config["ip"],
+            "system_data": system_data,
+            "web_data": web_data
+        }
+        
+        # Save to server-specific index
+        index_name = f"server-{server_id}-monitoring"
+        await data_collector.es_client.index_document(index_name, combined_data)
+        
+        # Update server last_seen
+        server_config["last_seen"] = datetime.now().isoformat()
+        server_config["status"] = "active"
+        await data_collector.es_client.index_document("servers-config", server_config)
+        
+        print(f"✅ {server_config['name']} için veri toplandı (yerel bilgisayardan)")
             
     except Exception as e:
         print(f"❌ Server data collection error: {e}")

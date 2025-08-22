@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Server, 
@@ -26,34 +26,7 @@ const ServersManager = () => {
   const [serverData, setServerData] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    loadServers();
-  }, []);
-
-  useEffect(() => {
-    // İlk yükleme için localhost sunucuyu seç
-    if (servers.length > 0 && !selectedServer) {
-      const localhost = servers.find(s => s.ip === '127.0.0.1') || servers[0];
-      setSelectedServer(localhost);
-    }
-  }, [servers, selectedServer]);
-
-  useEffect(() => {
-    if (selectedServer) {
-      fetchServerData();
-    }
-  }, [selectedServer]);
-
-  const loadServers = async () => {
-    try {
-      const response = await apiGet('/api/servers');
-      setServers(response.servers || []);
-    } catch (error) {
-      console.error('Sunucular yüklenemedi:', error);
-    }
-  };
-
-  const fetchServerData = async () => {
+  const fetchServerData = useCallback(async () => {
     if (!selectedServer) return;
     
     try {
@@ -88,6 +61,33 @@ const ServersManager = () => {
     } finally {
       setLoading(false);
     }
+  }, [selectedServer]);
+
+  useEffect(() => {
+    loadServers();
+  }, []);
+
+  useEffect(() => {
+    // İlk yükleme için localhost sunucuyu seç
+    if (servers.length > 0 && !selectedServer) {
+      const localhost = servers.find(s => s.ip === '127.0.0.1') || servers[0];
+      setSelectedServer(localhost);
+    }
+  }, [servers, selectedServer]);
+
+  useEffect(() => {
+    if (selectedServer) {
+      fetchServerData();
+    }
+  }, [selectedServer, fetchServerData]);
+
+  const loadServers = async () => {
+    try {
+      const response = await apiGet('/api/servers');
+      setServers(response.servers || []);
+    } catch (error) {
+      console.error('Sunucular yüklenemedi:', error);
+    }
   };
 
   const addServer = async () => {
@@ -104,6 +104,9 @@ const ServersManager = () => {
         await loadServers(); // Reload servers from Elasticsearch
         setNewServer({ name: '', ip: '', description: '' });
         setShowAddForm(false);
+        
+        // Automatically select the newly added server
+        setSelectedServer(response.server);
       }
     } catch (error) {
       console.error('Sunucu eklenemedi:', error);
