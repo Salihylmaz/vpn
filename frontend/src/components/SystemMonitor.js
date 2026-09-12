@@ -3,13 +3,19 @@ import { motion } from 'framer-motion';
 import { 
   Cpu, 
   HardDrive, 
-  Wifi
+  Wifi, 
+  Activity, 
+  Clock, 
+  Server, 
+  User, 
+  MapPin
 } from 'lucide-react';
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { apiGet } from '../lib/apiClient';
 
 const SystemMonitor = () => {
   const [systemData, setSystemData] = useState(null);
+  const [activeProfile, setActiveProfile] = useState(null);
   const [historicalData, setHistoricalData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -18,6 +24,7 @@ const SystemMonitor = () => {
   useEffect(() => {
     fetchSystemData();
     fetchHistory();
+    fetchActiveProfile();
   }, []);
 
   useEffect(() => {
@@ -56,6 +63,15 @@ const SystemMonitor = () => {
     } catch (e) {
       console.error('Geçmiş veri hatası', e);
       // geçmiş yüklenemese de UI'yı engellemeyelim
+    }
+  };
+
+  const fetchActiveProfile = async () => {
+    try {
+      const data = await apiGet('/api/active-profile');
+      setActiveProfile(data);
+    } catch (e) {
+      console.error('Aktif profil hatası', e);
     }
   };
 
@@ -128,6 +144,21 @@ const SystemMonitor = () => {
           <p className="text-white/60 text-sm">Bağlantılar: {systemData?.network?.network_connections?.total_connections ?? '-'}</p>
         </div>
       </div>
+
+      {/* Active Profile */}
+      {activeProfile && (
+        <div className="card p-6">
+          <h3 className="text-white font-semibold mb-4">Aktif Profil</h3>
+          <div className="flex items-center justify-between mb-4">
+            <div className="w-12 h-12 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-xl flex items-center justify-center">
+              <Server className="w-6 h-6 text-white" />
+            </div>
+            <div className="text-2xl font-bold text-white">{activeProfile.name}</div>
+          </div>
+          <p className="text-white/60 text-sm">Konum: {activeProfile.location}</p>
+          <p className="text-white/60 text-sm">Kullanıcı: {activeProfile.user}</p>
+        </div>
+      )}
 
       {/* Charts */}
       <div className="card p-6">

@@ -24,6 +24,10 @@ class ElasticsearchClient:
 		scheme = 'https' if self.use_ssl else 'http'
 		self.url = f"{scheme}://{self.host}:{self.port}"
 		
+		print(f"🔍 DEBUG: Elasticsearch bağlantı parametreleri:")
+		print(f"   Host: {self.host}")
+		print(f"   Port: {self.port}")
+		print(f"   URL: {self.url}")
 		print(f"Elasticsearch bağlantısı deneniyor: {self.url}")
 		
 		# Bağlantı parametrelerini hazırla
@@ -281,6 +285,50 @@ class ElasticsearchClient:
 		except Exception as e:
 			print(f"❌ En son belge alınamadı ({index_name}): {e}")
 			return None
+	
+	async def delete_document(self, index_name, doc_id):
+		"""
+		Belgeyi siler.
+		
+		Args:
+			index_name (str): İndeks adı
+			doc_id (str): Belge ID'si
+			
+		Returns:
+			bool: Silme başarılı mı
+		"""
+		try:
+			await self.es.delete(index=index_name, id=doc_id)
+			print(f"✅ Belge silindi: {doc_id}")
+			return True
+		except Exception as e:
+			# 404 hatası normal - belge zaten silinmiş
+			if "404" in str(e) or "not_found" in str(e).lower():
+				print(f"⚠️ Belge zaten silinmiş: {doc_id}")
+				return True  # Zaten silinmiş sayılır
+			else:
+				print(f"❌ Belge silinemedi ({doc_id}): {e}")
+				return False
+	
+	async def delete_by_query(self, index_name, query):
+		"""
+		Sorguya göre belgeleri siler.
+		
+		Args:
+			index_name (str): İndeks adı
+			query (dict): Elasticsearch sorgusu
+			
+		Returns:
+			bool: Silme başarılı mı
+		"""
+		try:
+			response = await self.es.delete_by_query(index=index_name, body={"query": query})
+			deleted_count = response.get("deleted", 0)
+			print(f"✅ {deleted_count} belge silindi")
+			return True
+		except Exception as e:
+			print(f"❌ Sorguya göre silme hatası: {e}")
+			return False
 
 # Test fonksiyonu
 def test_elasticsearch_8x():

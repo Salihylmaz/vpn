@@ -2,13 +2,20 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { 
   Download, 
-  RefreshCw
+  RefreshCw,
+  Activity, 
+  Cpu, 
+  HardDrive, 
+  Wifi, 
+  Clock, 
+  Server
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { apiGet } from '../lib/apiClient';
 
 const DataHistory = () => {
   const [historicalData, setHistoricalData] = useState([]);
+  const [activeProfile, setActiveProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState('24h');
   const [selectedMetric, setSelectedMetric] = useState('cpu');
@@ -154,6 +161,13 @@ const DataHistory = () => {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+      <div className="card p-6">
+        <h3 className="text-white font-semibold mb-4">Aktif Sunucu Profili</h3>
+        <div className="flex items-center space-x-4">
+          <Server className="w-6 h-6 text-white" />
+          <span className="text-white/80">Aktif Sunucu Profili: {activeProfile}</span>
         </div>
       </div>
     </div>

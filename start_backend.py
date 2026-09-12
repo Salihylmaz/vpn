@@ -94,19 +94,19 @@ def main():
     
     print("\n🎯 Backend başlatılıyor...")
     
-    # API dizinine git
-    api_dir = Path(__file__).parent / 'api'
-    if not api_dir.exists():
-        print(f"❌ API dizini bulunamadı: {api_dir}")
+    # Backend dizinine git
+    backend_dir = Path(__file__).parent / 'backend'
+    if not backend_dir.exists():
+        print(f"❌ Backend dizini bulunamadı: {backend_dir}")
         sys.exit(1)
     
-    os.chdir(api_dir)
+    os.chdir(backend_dir)
     
     # Backend'i başlat
     try:
         subprocess.run([
             sys.executable, '-m', 'uvicorn', 
-            'main:app', 
+            'api:app', 
             '--host', '0.0.0.0', 
             '--port', '8000',
             '--reload'

@@ -6,6 +6,7 @@ import SystemMonitor from './components/SystemMonitor';
 import QueryInterface from './components/QueryInterface';
 import DataHistory from './components/DataHistory';
 import ServersManager from './components/ServersManager';
+import ModelManager from './components/ModelManager';
 import './App.css';
 
 const App = () => {
@@ -18,6 +19,7 @@ const App = () => {
             <Route path="/" element={<Dashboard />} />
             <Route path="/system" element={<SystemMonitor />} />
             <Route path="/servers" element={<ServersManager />} />
+            <Route path="/models" element={<ModelManager />} />
             <Route path="/query" element={<QueryInterface />} />
             <Route path="/history" element={<DataHistory />} />
           </Routes>

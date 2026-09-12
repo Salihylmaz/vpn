@@ -16,6 +16,7 @@ const Dashboard = () => {
   const [systemData, setSystemData] = useState(null);
   const [healthStatus, setHealthStatus] = useState(null);
   const [monitoringStatus, setMonitoringStatus] = useState(null);
+  const [activeProfile, setActiveProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [collecting, setCollecting] = useState(false);
 
@@ -28,15 +29,17 @@ const Dashboard = () => {
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
-      const [health, system, status] = await Promise.all([
+      const [health, system, status, profile] = await Promise.all([
         apiGet('/api/health'),
         apiGet('/api/system-info'),
-        apiGet('/api/status')
+        apiGet('/api/status'),
+        apiGet('/api/active-profile')
       ]);
 
       setHealthStatus(health);
       setSystemData(system);
       setMonitoringStatus(status);
+      setActiveProfile(profile);
       setLoading(false);
     } catch (error) {
       console.error('Dashboard veri yükleme hatası:', error);
@@ -201,6 +204,50 @@ const Dashboard = () => {
               >
                 {monitoringStatus.active ? 'Durdur' : 'Başlat'}
               </motion.button>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Active Server Profile */}
+      {activeProfile && activeProfile.name && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="card p-6"
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="w-3 h-3 rounded-full bg-green-400"></div>
+              <div>
+                <h3 className="text-white font-semibold">Aktif Sunucu Profili</h3>
+                <p className="text-white/60 text-sm">{activeProfile.name}</p>
+                {activeProfile.location && (
+                  <p className="text-white/40 text-xs">{activeProfile.location}</p>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center space-x-3">
+              <div className="text-right">
+                <p className="text-white/60 text-sm">Host</p>
+                <p className="text-white font-medium">{activeProfile.host}</p>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {!activeProfile && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="card p-6 border border-yellow-500/20"
+        >
+          <div className="flex items-center space-x-3">
+            <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
+            <div>
+              <h3 className="text-white font-semibold">Aktif Profil Yok</h3>
+              <p className="text-white/60 text-sm">Sunucular sayfasından bir profil aktifleştirin</p>
             </div>
           </div>
         </motion.div>
