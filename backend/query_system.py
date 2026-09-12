@@ -2,19 +2,201 @@ import torch
 import sys
 import os
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from .elasticsearch_client_v8 import ElasticsearchClient
-from .config import USER_CONFIG
+from elasticsearch_client_v8 import ElasticsearchClient
+from config import USER_CONFIG, ELASTICSEARCH_CONFIG, MODEL_CONFIG
 from datetime import datetime, timedelta
-import json
 import re
+import json
+import asyncio
+import signal
+import time
+
+class ModelManager:
+	"""
+	HuggingFace modellerini yöneten sınıf.
+	"""
+	
+	def __init__(self):
+		self.current_model = None
+		self.current_tokenizer = None
+		self.current_model_id = None
+		self.model_cache = {}
+		self.available_models = MODEL_CONFIG['available_models']
+		
+	def get_available_models(self):
+		"""Mevcut modellerin listesini döner."""
+		return self.available_models
+	
+	def get_model_by_id(self, model_id):
+		"""Model ID'sine göre model bilgisini döner."""
+		for model in self.available_models:
+			if model['id'] == model_id:
+				return model
+		return None
+	
+	def get_current_model_info(self):
+		"""Şu anda yüklü olan model bilgisini döner."""
+		if self.current_model_id:
+			return self.get_model_by_id(self.current_model_id)
+		return None
+	
+	def load_model(self, model_id=None, force_reload=False):
+		"""
+		Belirtilen modeli yükler.
+		
+		Args:
+			model_id (str): Yüklenecek model ID'si
+			force_reload (bool): Zaten yüklüyse tekrar yükle
+			
+		Returns:
+			tuple: (model, tokenizer) veya None
+		"""
+		# Varsayılan model
+		if not model_id:
+			model_id = os.environ.get("MODEL_ID", "dialogpt-small")  # Changed to causal LM
+		
+		# Zaten yüklüyse ve force_reload değilse mevcut modeli döner
+		if not force_reload and self.current_model_id == model_id and self.current_model:
+			print(f"✅ Model zaten yüklü: {model_id}")
+			return self.current_model, self.current_tokenizer
+		
+		# Model bilgisini al
+		model_info = self.get_model_by_id(model_id)
+		if not model_info:
+			print(f"❌ Model bulunamadı: {model_id}")
+			# Auto fallback to smallest model
+			if MODEL_CONFIG.get('auto_fallback'):
+				print("🔄 En küçük modele geçiliyor...")
+				return self.load_model('tiny-model', force_reload=True)
+			return None, None
+		
+		model_name = model_info['name']
+		print(f"📥 Model yükleniyor: {model_info['display_name']} ({model_name})")
+		
+		# Timeout handler
+		def timeout_handler(signum, frame):
+			raise TimeoutError("Model loading timeout")
+		
+		try:
+			# Set timeout for model loading (5 minutes)
+			signal.signal(signal.SIGALRM, timeout_handler)
+			signal.alarm(300)  # 5 minutes timeout
+			
+			start_time = time.time()
+			
+			# Performans ayarları
+			configured_threads = int(os.environ.get("TORCH_NUM_THREADS", "0"))
+			if configured_threads <= 0:
+				cpu_count = os.cpu_count() or 4
+				configured_threads = min(2, cpu_count)
+			torch.set_num_threads(configured_threads)
+			print(f"🧵 Torch threads: {configured_threads}")
+			
+			# HuggingFace token
+			hf_token = os.environ.get("HF_TOKEN")
+			
+			# Tokenizer yükle
+			tokenizer = AutoTokenizer.from_pretrained(
+				model_name,
+				use_fast=True,
+				token=hf_token
+			)
+			
+			# Cihaz ve dtype seçimi
+			use_cuda = torch.cuda.is_available()
+			model_kwargs = {
+				"low_cpu_mem_usage": True,  # Always use low CPU memory
+				"trust_remote_code": True,
+			}
+			
+			if use_cuda:
+				model_kwargs.update({
+					"torch_dtype": torch.float16,
+					"device_map": "auto"
+				})
+				print("🟢 CUDA bulundu, model GPU'da yüklenecek (fp16)")
+			else:
+				# CPU için memory optimizasyonları
+				model_kwargs.update({
+					"torch_dtype": torch.float16,  # fp16 kullan, fp32 yerine
+					"load_in_8bit": False,  # 8-bit quantization devre dışı (CPU'da desteklenmiyor)
+					"load_in_4bit": False,  # 4-bit quantization devre dışı (CPU'da desteklenmiyor)
+				})
+				print("🟠 CUDA yok, model CPU'da yüklenecek (fp16 - memory optimized)")
+			
+			# Model yükle
+			model = AutoModelForCausalLM.from_pretrained(
+				model_name,
+				token=hf_token,
+				**model_kwargs
+			)
+			
+			# Memory optimization for CPU
+			if not use_cuda:
+				# Gradient checkpointing'i etkinleştir (memory tasarrufu için)
+				if hasattr(model, 'gradient_checkpointing_enable'):
+					model.gradient_checkpointing_enable()
+				
+				# Model'i CPU'ya taşı ve optimize et
+				model = model.to('cpu')
+				
+			model.eval()
+			
+			# Clear timeout
+			signal.alarm(0)
+			
+			# Pad token ekle
+			if tokenizer.pad_token is None:
+				tokenizer.pad_token = tokenizer.eos_token
+			
+			# Eski modeli temizle
+			if self.current_model:
+				del self.current_model
+				del self.current_tokenizer
+				torch.cuda.empty_cache() if torch.cuda.is_available() else None
+			
+			# Yeni modeli kaydet
+			self.current_model = model
+			self.current_tokenizer = tokenizer
+			self.current_model_id = model_id
+			
+			load_time = time.time() - start_time
+			print(f"✅ Model başarıyla yüklendi: {model_info['display_name']} ({load_time:.1f}s)")
+			return model, tokenizer
+			
+		except (Exception, TimeoutError) as e:
+			# Clear timeout
+			signal.alarm(0)
+			
+			print(f"❌ Model yükleme hatası ({model_name}): {e}")
+			
+			# Auto fallback
+			if MODEL_CONFIG.get('auto_fallback') and model_id not in MODEL_CONFIG['fallback_order']:
+				print("🔄 Fallback modeli deneniyor...")
+				for fallback_id in MODEL_CONFIG['fallback_order']:
+					if fallback_id != model_id:
+						try:
+							return self.load_model(fallback_id, force_reload=True)
+						except Exception as fallback_error:
+							print(f"❌ Fallback model hatası ({fallback_id}): {fallback_error}")
+							continue
+			
+			return None, None
 
 class QuerySystem:
 	"""
-	Qwen2.5-3B-Instruct modelini kullanarak Elasticsearch'ten veri sorgulayan sistem.
+	Dinamik model seçimi ile Elasticsearch'ten veri sorgulayan sistem.
 	"""
 	
-	def __init__(self, es_host='localhost', es_port=9200, es_username=None, es_password=None, use_ssl=False):
-		print("🤖 Qwen2.5 Query System başlatılıyor...")
+	def __init__(self, es_host=None, es_port=None, es_username=None, es_password=None, use_ssl=None, model_id=None):
+		print("🤖 Query System başlatılıyor...")
+		
+		# Config'den varsayılan değerleri al
+		es_host = es_host or ELASTICSEARCH_CONFIG['host']
+		es_port = es_port or ELASTICSEARCH_CONFIG['port']
+		es_username = es_username or ELASTICSEARCH_CONFIG['username']
+		es_password = es_password or ELASTICSEARCH_CONFIG['password']
+		use_ssl = use_ssl if use_ssl is not None else ELASTICSEARCH_CONFIG['use_ssl']
 		
 		# Elasticsearch bağlantısı
 		self.es_client = ElasticsearchClient(
@@ -25,78 +207,18 @@ class QuerySystem:
 			use_ssl=use_ssl
 		)
 		
-		# Model ve tokenizer'ı yükle
-		print("📥 LLM modeli yükleniyor...")
-		try:
-			# Performans: CPU thread sayısını sınırla
-			try:
-				configured_threads = int(os.environ.get("TORCH_NUM_THREADS", "0"))
-			except Exception:
-				configured_threads = 0
-			if configured_threads <= 0:
-				cpu_count = os.cpu_count() or 4
-				configured_threads = min(4, cpu_count)
-			torch.set_num_threads(configured_threads)
-			print(f"🧵 Torch threads: {configured_threads}")
-
-			# Varsayılan: Qwen2.5-3B-Instruct; isterseniz MODEL_NAME ile override edebilirsiniz
-			model_name = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
-			print(f"🧠 Model: {model_name}")
-
-			# HF Transformers yolu (Qwen tokenizer)
-			hf_token = os.environ.get("HF_TOKEN")
-			self.tokenizer = AutoTokenizer.from_pretrained(
-				model_name,
-				use_fast=True,
-				token=hf_token
-			)
-			# Cihaz ve dtype seçimi
-			use_cuda = torch.cuda.is_available()
-			model_kwargs = {
-				"low_cpu_mem_usage": not use_cuda,
-			}
-			if use_cuda:
-				model_kwargs.update({
-					"torch_dtype": torch.float16,
-					"device_map": "auto"
-				})
-				print("🟢 CUDA bulundu, model GPU'da yüklenecek (fp16)")
-			else:
-				model_kwargs.update({
-					"torch_dtype": torch.float32
-				})
-				print("🟠 CUDA yok, model CPU'da yüklenecek (fp32) - yükleme biraz zaman alabilir")
-			self.model = AutoModelForCausalLM.from_pretrained(
-				model_name,
-				token=hf_token,
-				**model_kwargs
-			)
-			self.model.eval()
-			
-			# Pad token ekle
-			if self.tokenizer.pad_token is None:
-				self.tokenizer.pad_token = self.tokenizer.eos_token
-			
-			print("✅ Model başarıyla yüklendi!")
-			
-		except Exception as e:
-			print(f"❌ Model yüklenirken hata: {e}")
-			raise
+		# Model manager'ı başlat
+		self.model_manager = ModelManager()
 		
-		# Cevap şablonları
-		self.response_templates = {
-			"vpn_status": "VPN durumu: {status}. {message}",
-			"speed_info": "Hız bilgisi - İndirme: {download} Mbps, Yükleme: {upload} Mbps, Ping: {ping} ms",
-			"system_info": "Sistem durumu - CPU: {cpu}%, RAM: {memory}%, Disk: {disk}%",
-			"location_info": "Konum bilgisi: {city}, {country} ({ip})",
-			"device_listing": "Cihaz listesi: {devices}",
-			"time_analysis": "Zaman analizi: {time_info}",
-			"data_coverage": "Veri kapsamı: {coverage_info}",
-			"time_based": "{time} tarihinde {info}",
-			"not_found": "Belirtilen zamanda/kriterde veri bulunamadı.",
-			"error": "Sorgu işlenirken hata oluştu: {error}"
-		}
-	
+		# İlk modeli yükle
+		self.model, self.tokenizer = self.model_manager.load_model(model_id)
+		
+		if not self.model or not self.tokenizer:
+			raise Exception("Model yüklenemedi!")
+		
+		# Model ayarları
+		self.model_settings = MODEL_CONFIG['model_settings'].copy()
+		
 	def parse_time_query(self, query):
 		"""
 		Doğal dil sorgudan zaman bilgisini çıkarır.
@@ -370,7 +492,7 @@ class QuerySystem:
 			str: Formatlanmış yanıt
 		"""
 		if not data:
-			return self.response_templates["not_found"]
+			return "Belirtilen zamanda/kriterde veri bulunamadı."
 		
 		try:
 			if intent['intent'] == 'vpn_status':
@@ -397,11 +519,7 @@ class QuerySystem:
 				latest_data = data[0]  # En son veri
 				speed_info = latest_data.get('web_data', {}).get('speed_test', {})
 				if speed_info:
-					return self.response_templates["speed_info"].format(
-						download=speed_info.get('download_speed', 'N/A'),
-						upload=speed_info.get('upload_speed', 'N/A'),
-						ping=speed_info.get('ping', 'N/A')
-					)
+					return f"Hız bilgisi - İndirme: {speed_info.get('download_speed', 'N/A')} Mbps, Yükleme: {speed_info.get('upload_speed', 'N/A')} Mbps, Ping: {speed_info.get('ping', 'N/A')} ms"
 			
 			elif intent['intent'] == 'system_info':
 				latest_data = data[0]  # En son veri
@@ -410,19 +528,13 @@ class QuerySystem:
 				memory = system_data.get('memory', {}).get('virtual_memory', {}).get('percent', 'N/A')
 				disk = system_data.get('disk', {}).get('disk_usage', {}).get('main', {}).get('percent', 'N/A')
 				
-				return self.response_templates["system_info"].format(
-					cpu=cpu, memory=memory, disk=disk
-				)
+				return f"Sistem durumu - CPU: {cpu}%, RAM: {memory}%, Disk: {disk}%"
 			
 			elif intent['intent'] == 'location_info':
 				latest_data = data[0]  # En son veri
 				ip_info = latest_data.get('web_data', {}).get('ip_info', {})
 				if ip_info:
-					return self.response_templates["location_info"].format(
-						city=ip_info.get('city', 'N/A'),
-						country=ip_info.get('country', 'N/A'),
-						ip=latest_data.get('web_data', {}).get('ip_address', 'N/A')
-					)
+					return f"Konum bilgisi: {ip_info.get('city', 'N/A')}, {ip_info.get('country', 'N/A')} ({latest_data.get('web_data', {}).get('ip_address', 'N/A')})"
 			
 			elif intent['intent'] == 'device_listing':
 				# Tüm verilerdeki benzersiz cihazları bul
@@ -457,8 +569,7 @@ class QuerySystem:
 					first_time = timestamps[0][:16]  # YYYY-MM-DD HH:MM formatında
 					last_time = timestamps[-1][:16]
 					
-					return f"Zaman analizi: {start_time[:10]} tarihinde {data_count} kayıt var. " \
-						   f"İlk kayıt: {first_time}, Son kayıt: {last_time}"
+					return f"Zaman analizi: {start_time[:10]} tarihinde {data_count} kayıt var. İlk kayıt: {first_time}, Son kayıt: {last_time}"
 				else:
 					return f"Zaman analizi: {start_time[:10]} tarihinde {data_count} kayıt var."
 			
@@ -509,11 +620,61 @@ class QuerySystem:
 			return " | ".join(response_parts) if response_parts else "Veri bulunamadı."
 			
 		except Exception as e:
-			return self.response_templates["error"].format(error=str(e))
+			return f"Sorgu işlenirken hata oluştu: {str(e)}"
 	
-	def generate_response_with_qwen(self, context, max_new_tokens=64):
+	def change_model(self, model_id):
 		"""
-		Qwen Instruct ile yanıt üretir.
+		Aktif modeli değiştirir.
+		
+		Args:
+			model_id (str): Yeni model ID'si
+			
+		Returns:
+			bool: Başarılı ise True
+		"""
+		print(f"🔄 Model değiştiriliyor: {model_id}")
+		
+		model, tokenizer = self.model_manager.load_model(model_id, force_reload=True)
+		
+		if model and tokenizer:
+			self.model = model
+			self.tokenizer = tokenizer
+			print(f"✅ Model başarıyla değiştirildi: {model_id}")
+			return True
+		else:
+			print(f"❌ Model değiştirilemedi: {model_id}")
+			return False
+	
+	def get_model_status(self):
+		"""
+		Mevcut model durumunu döner.
+		
+		Returns:
+			dict: Model durum bilgileri
+		"""
+		current_model = self.model_manager.get_current_model_info()
+		
+		return {
+			'current_model': current_model,
+			'available_models': self.model_manager.get_available_models(),
+			'model_settings': self.model_settings,
+			'cuda_available': torch.cuda.is_available(),
+			'torch_threads': torch.get_num_threads()
+		}
+	
+	def update_model_settings(self, settings):
+		"""
+		Model üretim ayarlarını günceller.
+		
+		Args:
+			settings (dict): Yeni ayarlar
+		"""
+		self.model_settings.update(settings)
+		print(f"⚙️ Model ayarları güncellendi: {settings}")
+	
+	def generate_response_with_qwen(self, context, max_new_tokens=None):
+		"""
+		Aktif model ile yanıt üretir.
 		
 		Args:
 			context (str): Bağlam + yapılandırılmış çıktı içeren metin
@@ -522,18 +683,34 @@ class QuerySystem:
 		Returns:
 			str: Üretilen yanıt
 		"""
+		if not self.model or not self.tokenizer:
+			return "Model yüklü değil."
+		
+		# Ayarları al
+		max_new_tokens = max_new_tokens or self.model_settings.get('max_new_tokens', 256)
+		temperature = self.model_settings.get('temperature', 0.7)
+		top_p = self.model_settings.get('top_p', 0.9)
+		repetition_penalty = self.model_settings.get('repetition_penalty', 1.1)
+		no_repeat_ngram_size = self.model_settings.get('no_repeat_ngram_size', 2)
+		max_time = self.model_settings.get('max_generation_time', 30.0)
+		
 		try:
-			# Qwen chat biçimi (chat template varsa kullanılır)
-			system_prompt = """
-					Sen bir Türkçe konuşan akıllı asistanısın. 
-					Görevin: kullanıcının sorusunu anlamak, bağlamı dikkate almak ve kısa, net, anlaşılır şekilde cevap vermek. 
-					Yanıtlarında:
-					- Gereksiz tekrar yapma.
-					- Türkçe dil bilgisine dikkat et.
-					- Eğer bağlam yeterli değilse, kullanıcıya açıklama sor.
-					- Yanıtlarda doğrudan, samimi ve profesyonel ol.
-					"""
-			# Chat template varsa kullan, yoksa düz prompt'a düş
+			# Model bilgisini al
+			current_model_info = self.model_manager.get_current_model_info()
+			model_name = current_model_info['display_name'] if current_model_info else "Bilinmeyen Model"
+			
+			# System prompt
+			system_prompt = f"""
+Sen bir Türkçe konuşan akıllı asistanısın ({model_name}). 
+Görevin: kullanıcının sorusunu anlamak, bağlamı dikkat et ve kısa, net, anlaşılır şekilde cevap vermek. 
+Yanıtlarında:
+- Gereksiz tekrar yapma.
+- Türkçe dil bilgisine dikkat et.
+- Eğer bağlam yeterli değilse, kullanıcıya açıklama sor.
+- Yanıtlarda doğrudan, samimi ve profesyonel ol.
+"""
+			
+			# Chat template varsa kullan
 			if hasattr(self.tokenizer, "apply_chat_template") and callable(getattr(self.tokenizer, "apply_chat_template")):
 				messages = [
 					{"role": "system", "content": system_prompt},
@@ -549,41 +726,40 @@ class QuerySystem:
 				prompt = f"System: {system_prompt}\nUser: {context}\nAssistant:"
 				inputs = self.tokenizer(prompt, return_tensors="pt")
 
-			# Attention mask'i açıkça geç (pad=eos durumunda uyarıyı önler)
+			# Attention mask
 			if "attention_mask" in inputs:
 				attention_mask = inputs["attention_mask"]
 			else:
-				attention_mask = torch.ones_like(inputs["input_ids"]) 
-			# Maksimum üretim süresi (takılmaları engelle)
-			try:
-				max_time = float(os.environ.get("GEN_MAX_TIME", "20"))
-			except Exception:
-				max_time = 20.0
+				attention_mask = torch.ones_like(inputs["input_ids"])
+			
+			# Üretim
 			with torch.no_grad():
 				outputs = self.model.generate(
 					**inputs,
 					attention_mask=attention_mask,
 					max_new_tokens=max_new_tokens,
 					do_sample=True,
-					temperature=0.7,
-					top_p=0.9,
+					temperature=temperature,
+					top_p=top_p,
 					eos_token_id=self.tokenizer.eos_token_id,
 					pad_token_id=self.tokenizer.eos_token_id,
-					repetition_penalty=1.1,
-					no_repeat_ngram_size=2,
+					repetition_penalty=repetition_penalty,
+					no_repeat_ngram_size=no_repeat_ngram_size,
 					use_cache=True,
 					max_time=max_time
 				)
+			
 			generated = outputs[0].to("cpu")
 			start_idx = 0
 			if isinstance(inputs, dict) and "input_ids" in inputs:
 				start_idx = inputs["input_ids"].shape[1]
 			text = self.tokenizer.decode(generated[start_idx:], skip_special_tokens=True)
 			return text.strip()
+			
 		except Exception as e:
-			print(f"❌ Qwen yanıt üretme hatası: {e}")
+			print(f"❌ Yanıt üretme hatası: {e}")
 			return "Yanıt üretemedim, teknik bir sorun oluştu."
-	
+
 	async def query(self, user_query):
 		"""
 		Kullanıcı sorgusunu işler ve yanıt döner.
@@ -626,6 +802,7 @@ class QuerySystem:
 			if intent['intent'] in deterministic_intents:
 				natural_response = structured_response
 			else:
+				# Daha iyi yönlendirme: intent ve zaman aralığını bağlama ekle
 				context = (
 					f"Soru: {user_query}\n"
 					f"Amaç: {intent['intent']}\n"
@@ -721,7 +898,7 @@ class QuerySystem:
 		Etkileşimli soru-cevap modu.
 		"""
 		print("\n" + "="*60)
-		print("🤖 Qwen2.5 Query System - Etkileşimli Mod")
+		print("🤖 Query System - Etkileşimli Mod")
 		print("="*60)
 		print("Sistem ve ağ verileriniz hakkında soru sorabilirsiniz!")
 		print("Örnek sorular:")
@@ -730,7 +907,7 @@ class QuerySystem:
 		print("- 'Bugün sistem performansı nasıl?'")
 		print("- 'Dün akşam hangi ülkede görünüyordum?'")
 		print("- 'Bugün hangi bilgisayarların verisi var?'")
-		print("- 'Bu hafta hangi saatlerde veri toplandı?'")
+		print("- 'Bu haftaki hangi saatlerde veri toplandı?'")
 		print("- 'Son 1 günde kaç kayıt var?'")
 		print("Çıkmak için 'quit' yazın.")
 		print("="*60)

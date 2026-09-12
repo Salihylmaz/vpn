@@ -40,3 +40,10 @@ export async function apiDelete(path, options = {}) {
   if (!res.ok) throw new Error(`DELETE ${path} failed: ${res.status}`);
   return res.json();
 }
+
+// Export apiClient object for components that expect it
+export const apiClient = {
+  get: apiGet,
+  post: apiPost,
+  delete: apiDelete
+};

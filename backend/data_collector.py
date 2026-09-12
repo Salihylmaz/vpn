@@ -2,30 +2,37 @@ from datetime import datetime
 import time
 import json
 import asyncio
-from .elasticsearch_client_v8 import ElasticsearchClient
-from .system_monitor import SystemMonitor
-from .web import WebInfo
-from .config import USER_CONFIG
+from elasticsearch_client_v8 import ElasticsearchClient
+from system_monitor import SystemMonitor
+from web import WebInfo
+from config import USER_CONFIG, ELASTICSEARCH_CONFIG
 
 class DataCollector:
 	"""
 	Sistem ve web verilerini toplayarak Elasticsearch'e kaydeden ana sınıf.
 	"""
 	
-	def __init__(self, es_host='localhost', es_port=9200, es_username=None, es_password=None, use_ssl=False):
+	def __init__(self, es_host=None, es_port=None, es_username=None, es_password=None, use_ssl=None):
 		"""
 		DataCollector başlatır.
 		
 		Args:
-			es_host (str): Elasticsearch sunucu adresi
-			es_port (int): Elasticsearch portu
+			es_host (str): Elasticsearch sunucu adresi (None ise config'den alır)
+			es_port (int): Elasticsearch portu (None ise config'den alır)
 			es_username (str): Kullanıcı adı (opsiyonel)
 			es_password (str): Şifre (opsiyonel)
-			use_ssl (bool): SSL kullanımı
+			use_ssl (bool): SSL kullanımı (None ise config'den alır)
 		"""
 		self.es_client = None
 		self.system_monitor = SystemMonitor()
 		self.web_info = WebInfo()
+		
+		# Config'den varsayılan değerleri al
+		es_host = es_host or ELASTICSEARCH_CONFIG['host']
+		es_port = es_port or ELASTICSEARCH_CONFIG['port']
+		es_username = es_username or ELASTICSEARCH_CONFIG['username']
+		es_password = es_password or ELASTICSEARCH_CONFIG['password']
+		use_ssl = use_ssl if use_ssl is not None else ELASTICSEARCH_CONFIG['use_ssl']
 		
 		# Elasticsearch bağlantısını kur
 		try:

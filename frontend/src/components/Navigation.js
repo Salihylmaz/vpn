@@ -7,7 +7,8 @@ import {
   MessageSquare, 
   History,
   Shield,
-  Server
+  Server,
+  Brain
 } from 'lucide-react';
 
 const Navigation = () => {
@@ -29,6 +30,12 @@ const Navigation = () => {
       name: 'Sunucular',
       icon: Server,
       color: 'from-indigo-500 to-purple-500'
+    },
+    {
+      path: '/models',
+      name: 'Model Yönetimi',
+      icon: Brain,
+      color: 'from-violet-500 to-purple-500'
     },
     {
       path: '/query',
